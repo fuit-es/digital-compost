@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "fuit-es"
+version = "0.1.0"
+description = ""
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
+packages = [{include = "fuit"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+pygame = "^2.6.1"
+noise = "^1.2.2"
+numpy = "^2.1.2"
+matplotlib = "^3.5.3"
+scikit-image = "^0.24.0"
+scikit-learn = "^1.5.2"
+flask = "^3.1.0"
+opencv-python = "^4.10.0.84"
+shapely = "^2.0.6"
+pymunk = "^6.9.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
