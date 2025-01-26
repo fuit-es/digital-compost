@@ -18,9 +18,9 @@ root = tk.Tk()
 root.withdraw()
 
 # Pygame and simulation constants
-WIDTH, HEIGHT = 1600, 1000
+WIDTH, HEIGHT = 800, 1000
 UI_BAR_HEIGHT = 60
-FPS = 120
+FPS = 60
 
 COLORS = {
     "BLACK": (0, 0, 0),
@@ -352,7 +352,7 @@ def main() -> None:
                     # Toggle debug mode
                     simulation.debug_mode = not simulation.debug_mode
 
-        screen.fill(COLORS["BLACK"])
+        screen.fill(COLORS["WHITE"])
         simulation.draw_ui()
         space.step(1 / FPS)
         simulation.update_chunks()

@@ -1,0 +1,27 @@
+simulation:
+  window:
+    width: 800
+    height: 1000
+    ui_bar_height: 60
+  fps: 60
+  gravity_x: 0
+  gravity_y: 0
+  chunk_velocity_min: -200
+  chunk_velocity_max: 200
+  buttons:
+    width: 120
+    height: 40
+    gap: 10
+
+segmentation:
+  felzenszwalb:
+    scale: 100
+    sigma: 0.8
+    min_size: 20
+
+colors:
+  BLACK: [0, 0, 0]
+  WHITE: [255, 255, 255]
+  DARK_GRAY: [70, 70, 70]
+  UI_BG: [30, 30, 30]
+  RED: [255, 0, 0]
