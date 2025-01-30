@@ -1,6 +1,6 @@
 simulation:
   window:
-    width: 800
+    width: 1200
     height: 1000
     ui_bar_height: 60
   fps: 60
@@ -14,9 +14,15 @@ simulation:
     gap: 10
 
 segmentation:
+  # --- Felzenszwalb Segmentation ---
+  # Hyperparameters to adjust:
+  # scale (int, default: 100), sigma (float, default: 0.8), min_size (int, default: 20)
+  # Increase scale -> fewer segments; Decrease scale -> more segments
+  # Increase sigma -> smoother image, fewer segments; Decrease sigma -> sharper details
+  # Increase min_size -> larger minimum segments; Decrease min_size -> smaller segments
   felzenszwalb:
     scale: 100
-    sigma: 0.8
+    sigma: 3
     min_size: 20
 
 colors:

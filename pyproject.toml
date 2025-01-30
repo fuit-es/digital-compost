@@ -18,6 +18,7 @@ flask = "^3.1.0"
 opencv-python = "^4.10.0.84"
 shapely = "^2.0.6"
 pymunk = "^6.9.0"
+pyaml = "^25.1.0"
 
 
 [build-system]
