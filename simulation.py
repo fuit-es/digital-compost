@@ -7,11 +7,16 @@ import numpy as np
 from tkinter import filedialog
 from typing import List, Tuple, Dict, Any
 from skimage.segmentation import felzenszwalb
-from skimage.color import rgba2rgb
+from skimage.color import rgba2rgb, rgb2gray
 from skimage.util import img_as_ubyte
+from skimage.transform import resize
 from scipy.spatial import ConvexHull, QhullError
 from utils import scale_image_to_fit, quit_program
+import sys
 
+# ------------------------------------------------------------
+#  ExactMaskChunk: Handles a single polygon chunk with physics and a surface.
+# ------------------------------------------------------------
 class ExactMaskChunk:
     """Handles a single polygon chunk with physics and a surface."""
 
@@ -21,6 +26,7 @@ class ExactMaskChunk:
         vertices: List[Tuple[float, float]],
         config: Dict[str, Any],
         space: pymunk.Space,
+        downsized: bool = False  # Indicates if the segment has been downsized
     ) -> None:
         """
         Initialize an ExactMaskChunk instance.
@@ -30,9 +36,9 @@ class ExactMaskChunk:
             vertices (List[Tuple[float, float]]): The polygon vertices for the chunk.
             config (Dict[str, Any]): The entire config dictionary loaded from YAML.
             space (pymunk.Space): The Pymunk physics space.
+            downsized (bool): Indicates if the segment has been downsized.
         """
         self.config = config
-        self.segment_surface = segment_surface
         self.space = space
 
         sim_cfg = config["simulation"]
@@ -42,12 +48,25 @@ class ExactMaskChunk:
         vel_min = sim_cfg["chunk_velocity_min"]
         vel_max = sim_cfg["chunk_velocity_max"]
 
+        if downsized:
+            # Resize the segment_surface to a smaller size
+            downsample_factor = config["compression"].get("downsample_factor", 0.5)
+            new_width = max(1, int(segment_surface.get_width() * downsample_factor))
+            new_height = max(1, int(segment_surface.get_height() * downsample_factor))
+            self.segment_surface = pygame.transform.scale(segment_surface, (new_width, new_height))
+            print(f"Downsized chunk to ({new_width}, {new_height})")
+            # Optionally, scale down the vertices as well
+            self.vertices = [(x * downsample_factor, y * downsample_factor) for (x, y) in vertices]
+        else:
+            self.segment_surface = segment_surface
+            self.vertices = vertices
+
         # Compute a valid random position using bounding-box constraints
-        random_x, random_y = self._get_random_position_in_bounds(vertices)
+        random_x, random_y = self._get_random_position_in_bounds(self.vertices)
 
         # Setup the chunk's body and shape
         mass = 1.0
-        moment = pymunk.moment_for_poly(mass, vertices)
+        moment = pymunk.moment_for_poly(mass, self.vertices)
         self.body = pymunk.Body(mass, moment)
         self.body.position = (random_x, random_y)
         self.body.velocity = (
@@ -55,12 +74,17 @@ class ExactMaskChunk:
             random.uniform(vel_min, vel_max),
         )
 
-        self.shape = pymunk.Poly(self.body, vertices)
+        self.shape = pymunk.Poly(self.body, self.vertices)
         self.shape.elasticity = 1.0
         self.shape.friction = 0.0
         self.shape.filter = pymunk.ShapeFilter(group=1)
 
         self.space.add(self.body, self.shape)
+
+        if downsized:
+            print(f"Created a downsized chunk at position ({random_x}, {random_y}) with size {self.segment_surface.get_size()}.")
+        else:
+            print(f"Created a chunk at position ({random_x}, {random_y}) with size {self.segment_surface.get_size()}.")
 
     def _get_random_position_in_bounds(
         self,
@@ -126,7 +150,6 @@ class ExactMaskChunk:
             ]
             pygame.draw.polygon(surface, colors["RED"], transformed_vertices, width=1)
 
-
 # ------------------------------------------------------------
 #  ChunkFactory: Responsible for creating ExactMaskChunk objects
 # ------------------------------------------------------------
@@ -147,7 +170,8 @@ class ChunkFactory:
     def create_chunks_from_segments(
         self,
         img: pygame.Surface,
-        segments: np.ndarray
+        segments: np.ndarray,
+        labels_to_downsize: List[int]
     ) -> List[ExactMaskChunk]:
         """
         Create chunk objects from the labeled image segments.
@@ -155,6 +179,7 @@ class ChunkFactory:
         Args:
             img (pygame.Surface): The original (scaled) image surface.
             segments (np.ndarray): Label matrix from Felzenszwalb.
+            labels_to_downsize (List[int]): List of segment labels that should be downsized.
 
         Returns:
             List[ExactMaskChunk]: A list of chunk objects.
@@ -215,24 +240,34 @@ class ChunkFactory:
                         if 0 <= blit_x < surface_width and 0 <= blit_y < surface_height:
                             centered_surface.set_at((blit_x, blit_y), color)
 
-            # Create the chunk
-            chunk = ExactMaskChunk(centered_surface, hull_vertices, self.config, self.space)
-            chunks.append(chunk)
-        return chunks
+            # Check if this segment is marked for downsizing
+            downsized = segment_label in labels_to_downsize
 
+            # Create the chunk
+            chunk = ExactMaskChunk(
+                segment_surface=centered_surface,
+                vertices=hull_vertices,
+                config=self.config,
+                space=self.space,
+                downsized=downsized  # Indicate if this chunk should be downsized
+            )
+            chunks.append(chunk)
+
+        return chunks
 
 # ------------------------------------------------------------
 #  ImageProcessor: Responsible for loading & segmenting images
 # ------------------------------------------------------------
 class ImageProcessor:
     """
-    Handles image loading, optional scaling, and Felzenszwalb segmentation.
+    Handles image loading, optional scaling, Felzenszwalb segmentation,
+    and compression of low complexity, large segments by marking them for downsizing.
     """
 
     def __init__(self, config: Dict[str, Any]) -> None:
         """
         Args:
-            config (Dict[str, Any]): The entire config dictionary (for segmentation params, etc.)
+            config (Dict[str, Any]): The entire config dictionary (for segmentation params, compression thresholds, etc.)
         """
         self.config = config
 
@@ -248,18 +283,22 @@ class ImageProcessor:
             filetypes=[("Image files", ("*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"))],
         )
         if file_path and os.path.exists(file_path):
-            return pygame.image.load(file_path).convert_alpha()
+            try:
+                return pygame.image.load(file_path).convert_alpha()
+            except pygame.error as e:
+                print(f"Unable to load image: {e}")
         return None
 
-    def segment_image(self, image: pygame.Surface) -> np.ndarray:
+    def segment_image(self, image: pygame.Surface) -> Tuple[np.ndarray, List[int]]:
         """
-        Perform Felzenszwalb segmentation on a Pygame image surface.
+        Perform Felzenszwalb segmentation on a Pygame image surface,
+        then mark segments that are too large and not very complex for downsizing.
 
         Args:
             image (pygame.Surface): The surface to segment.
 
         Returns:
-            np.ndarray: The labeled segments array.
+            Tuple[np.ndarray, List[int]]: The labeled segments array and list of segment labels to downsize.
         """
         # Convert Pygame surface to numpy array
         numpy_image = pygame.surfarray.array3d(image).swapaxes(0, 1)
@@ -271,13 +310,66 @@ class ImageProcessor:
             numpy_image = numpy_image[:, :, :3]
 
         felz_cfg = self.config["segmentation"]["felzenszwalb"]
-        return felzenszwalb(
+        segments = felzenszwalb(
             numpy_image,
             scale=felz_cfg["scale"],
             sigma=felz_cfg["sigma"],
             min_size=felz_cfg["min_size"],
         )
 
+        # Compress segments that are too large and not very complex by marking them
+        compress_cfg = self.config.get("compression", {})
+        max_size = compress_cfg.get("max_size", 5000)          # Default threshold
+        min_entropy = compress_cfg.get("min_entropy", 4.0)     # Default entropy threshold
+
+        # Convert RGB image to grayscale for entropy calculation
+        grayscale_image = rgb2gray(numpy_image)
+        grayscale_image = img_as_ubyte(grayscale_image)  # Convert to 0-255
+
+        unique_labels = np.unique(segments)
+        labels_to_downsize: List[int] = []
+
+        for label in unique_labels:
+            mask = segments == label
+            size = np.sum(mask)
+            if size < 3:
+                continue  # Ignore very small segments
+
+            # Calculate entropy
+            entropy = self._calculate_entropy(grayscale_image, mask)
+            print(f"Segment {label}: size={size}, entropy={entropy}")
+
+            if size > max_size and entropy < min_entropy:
+                # Mark this segment for downsizing
+                labels_to_downsize.append(label)
+                print(f"Marking segment {label} for downsizing.")
+
+        return segments, labels_to_downsize
+
+    def _calculate_entropy(self, grayscale_image: np.ndarray, mask: np.ndarray) -> float:
+        """
+        Calculate the entropy of the given mask in the grayscale image.
+
+        Args:
+            grayscale_image (np.ndarray): Grayscale version of the original image.
+            mask (np.ndarray): Boolean mask where True represents the segment.
+
+        Returns:
+            float: Entropy value.
+        """
+        # Extract the pixel values within the mask
+        pixel_values = grayscale_image[mask]
+
+        if pixel_values.size == 0:
+            return 0.0
+
+        # Calculate histogram
+        histogram, _ = np.histogram(pixel_values, bins=256, range=(0, 256), density=True)
+        histogram = histogram[histogram > 0]  # Remove zero entries to avoid log2 issues
+
+        # Calculate entropy
+        entropy = -np.sum(histogram * np.log2(histogram))
+        return entropy
 
 # ------------------------------------------------------------
 #  UIManager: Responsible for drawing UI elements
@@ -364,7 +456,6 @@ class UIManager:
         text_rect = text_surface.get_rect(center=rect.center)
         self.screen.blit(text_surface, text_rect)
 
-
 # ------------------------------------------------------------
 #  Simulation: Orchestrates the physics, UI, and chunk management
 # ------------------------------------------------------------
@@ -424,6 +515,7 @@ class Simulation:
         ]
         for line in static_lines:
             line.elasticity = 1.0
+            line.friction = 0.0
         self.space.add(*static_lines)
 
     def draw_ui(self) -> None:
@@ -464,13 +556,16 @@ class Simulation:
             max_width = self.width
             max_height = self.height - self.ui_bar_height
             image = scale_image_to_fit(image, max_width, max_height)
+            print(f"Image loaded and scaled to {image.get_size()}.")
 
-            # Segment the image
-            segments = self.image_processor.segment_image(image)
+            # Segment the image (with size reduction)
+            segments, labels_to_downsize = self.image_processor.segment_image(image)
+            print(f"Segmentation completed. {len(labels_to_downsize)} segments marked for downsizing.")
 
             # Create chunks and store them
-            new_chunks = self.chunk_factory.create_chunks_from_segments(image, segments)
+            new_chunks = self.chunk_factory.create_chunks_from_segments(image, segments, labels_to_downsize)
             self.chunks.extend(new_chunks)
+            print(f"Created {len(new_chunks)} new chunks.")
 
     def clear_chunks(self) -> None:
         """
@@ -478,4 +573,5 @@ class Simulation:
         """
         for chunk in self.chunks:
             self.space.remove(chunk.shape, chunk.body)
+        print(f"Removed {len(self.chunks)} chunks from the simulation.")
         self.chunks.clear()

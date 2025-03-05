@@ -25,6 +25,11 @@ segmentation:
     sigma: 3
     min_size: 20
 
+compression:
+  max_size: 10000
+  min_entropy: 20
+  downsample_factor: 0.1
+
 colors:
   BLACK: [0, 0, 0]
   WHITE: [255, 255, 255]
