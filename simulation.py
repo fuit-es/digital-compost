@@ -437,9 +437,6 @@ class Simulation:
         """
         image = self.image_processor.load_image_via_dialog()
         if image:
-            # Clear existing chunks and worm
-            self.clear_chunks()
-            
             # Scale the image to fit the screen
             max_width = self.width
             max_height = self.height - self.ui_bar_height
@@ -455,7 +452,7 @@ class Simulation:
             self.chunks.extend(new_chunks)
             print(f"Created {len(new_chunks)} new chunks.")
 
-            # Create a new worm
+            # Create a new worm each time an image is uploaded
             self.worm = Worm(self.config)
 
     def clear_chunks(self) -> None:

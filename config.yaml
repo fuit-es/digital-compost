@@ -15,8 +15,8 @@ simulation:
 
 worm:
   max_chunks: 100
-  min_difference: 0.5
-  max_difference: 0.9
+  min_difference: 0.05
+  max_difference: 0.06
   display_area:
     x: 10
     y: 70  # Just below the UI bar
