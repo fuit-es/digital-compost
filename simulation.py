@@ -12,150 +12,16 @@ from skimage.util import img_as_ubyte
 from skimage.transform import resize
 from scipy.spatial import ConvexHull, QhullError
 from utils import scale_image_to_fit, quit_program
+from worm import Worm
+from chunk_thingie import Chunk
 import sys
 
 # ------------------------------------------------------------
-#  ExactMaskChunk: Handles a single polygon chunk with physics and a surface.
-# ------------------------------------------------------------
-class ExactMaskChunk:
-    """Handles a single polygon chunk with physics and a surface."""
-
-    def __init__(
-        self,
-        segment_surface: pygame.Surface,
-        vertices: List[Tuple[float, float]],
-        config: Dict[str, Any],
-        space: pymunk.Space,
-        downsized: bool = False  # Indicates if the segment has been downsized
-    ) -> None:
-        """
-        Initialize an ExactMaskChunk instance.
-        
-        Args:
-            segment_surface (pygame.Surface): Cropped surface of the image segment.
-            vertices (List[Tuple[float, float]]): The polygon vertices for the chunk.
-            config (Dict[str, Any]): The entire config dictionary loaded from YAML.
-            space (pymunk.Space): The Pymunk physics space.
-            downsized (bool): Indicates if the segment has been downsized.
-        """
-        self.config = config
-        self.space = space
-
-        sim_cfg = config["simulation"]
-        self.width = sim_cfg["window"]["width"]
-        self.height = sim_cfg["window"]["height"]
-        self.ui_bar_height = sim_cfg["window"]["ui_bar_height"]
-        vel_min = sim_cfg["chunk_velocity_min"]
-        vel_max = sim_cfg["chunk_velocity_max"]
-
-        if downsized:
-            # Resize the segment_surface to a smaller size
-            downsample_factor = config["compression"].get("downsample_factor", 0.5)
-            new_width = max(1, int(segment_surface.get_width() * downsample_factor))
-            new_height = max(1, int(segment_surface.get_height() * downsample_factor))
-            self.segment_surface = pygame.transform.scale(segment_surface, (new_width, new_height))
-            print(f"Downsized chunk to ({new_width}, {new_height})")
-            # Optionally, scale down the vertices as well
-            self.vertices = [(x * downsample_factor, y * downsample_factor) for (x, y) in vertices]
-        else:
-            self.segment_surface = segment_surface
-            self.vertices = vertices
-
-        # Compute a valid random position using bounding-box constraints
-        random_x, random_y = self._get_random_position_in_bounds(self.vertices)
-
-        # Setup the chunk's body and shape
-        mass = 1.0
-        moment = pymunk.moment_for_poly(mass, self.vertices)
-        self.body = pymunk.Body(mass, moment)
-        self.body.position = (random_x, random_y)
-        self.body.velocity = (
-            random.uniform(vel_min, vel_max),
-            random.uniform(vel_min, vel_max),
-        )
-
-        self.shape = pymunk.Poly(self.body, self.vertices)
-        self.shape.elasticity = 1.0
-        self.shape.friction = 0.0
-        self.shape.filter = pymunk.ShapeFilter(group=1)
-
-        self.space.add(self.body, self.shape)
-
-        if downsized:
-            print(f"Created a downsized chunk at position ({random_x}, {random_y}) with size {self.segment_surface.get_size()}.")
-        else:
-            print(f"Created a chunk at position ({random_x}, {random_y}) with size {self.segment_surface.get_size()}.")
-
-    def _get_random_position_in_bounds(
-        self,
-        vertices: List[Tuple[float, float]]
-    ) -> Tuple[float, float]:
-        """
-        Compute a valid random (x,y) for this chunk, ensuring it remains within screen boundaries.
-
-        Args:
-            vertices (List[Tuple[float, float]]): Polygon vertices for this chunk.
-
-        Returns:
-            (random_x, random_y): A valid position where the chunk can be placed.
-        """
-        # 1) Compute bounding box
-        xs = [v[0] for v in vertices]
-        ys = [v[1] for v in vertices]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-
-        # 2) Determine allowable placement range
-        allowed_min_x = -min_x
-        allowed_max_x = self.width - max_x
-        allowed_min_y = self.ui_bar_height - min_y
-        allowed_max_y = self.height - max_y
-
-        # 3) Generate a valid random position
-        if allowed_min_x > allowed_max_x or allowed_min_y > allowed_max_y:
-            # If polygon is too large, clamp to a default position
-            random_x = max(0, allowed_min_x)
-            random_y = max(self.ui_bar_height, allowed_min_y)
-        else:
-            random_x = random.uniform(allowed_min_x, allowed_max_x)
-            random_y = random.uniform(allowed_min_y, allowed_max_y)
-
-        return random_x, random_y
-
-    def draw(self, surface: pygame.Surface, debug_mode: bool = False) -> None:
-        """
-        Draw the chunk on a Pygame surface.
-        
-        Args:
-            surface (pygame.Surface): The surface to draw on.
-            debug_mode (bool): Whether to draw debug outlines.
-        """
-        pos = self.body.position
-        angle_degrees = math.degrees(-self.body.angle)
-
-        rotated_surface = pygame.transform.rotate(self.segment_surface, angle_degrees)
-        rect = rotated_surface.get_rect(center=(int(pos.x), int(pos.y)))
-        surface.blit(rotated_surface, rect)
-
-        if debug_mode:
-            colors = self.config["colors"]
-            cos_a = math.cos(self.body.angle)
-            sin_a = math.sin(self.body.angle)
-            transformed_vertices = [
-                (
-                    v.x * cos_a - v.y * sin_a + pos.x,
-                    v.x * sin_a + v.y * cos_a + pos.y
-                )
-                for v in self.shape.get_vertices()
-            ]
-            pygame.draw.polygon(surface, colors["RED"], transformed_vertices, width=1)
-
-# ------------------------------------------------------------
-#  ChunkFactory: Responsible for creating ExactMaskChunk objects
+#  ChunkFactory: Responsible for creating Chunk objects
 # ------------------------------------------------------------
 class ChunkFactory:
     """
-    Converts labeled segments from an image into ExactMaskChunk objects.
+    Converts labeled segments from an image into Chunk objects.
     """
 
     def __init__(self, config: Dict[str, Any], space: pymunk.Space) -> None:
@@ -172,7 +38,7 @@ class ChunkFactory:
         img: pygame.Surface,
         segments: np.ndarray,
         labels_to_downsize: List[int]
-    ) -> List[ExactMaskChunk]:
+    ) -> List[Chunk]:
         """
         Create chunk objects from the labeled image segments.
 
@@ -182,9 +48,9 @@ class ChunkFactory:
             labels_to_downsize (List[int]): List of segment labels that should be downsized.
 
         Returns:
-            List[ExactMaskChunk]: A list of chunk objects.
+            List[Chunk]: A list of chunk objects.
         """
-        chunks: List[ExactMaskChunk] = []
+        chunks: List[Chunk] = []
 
         unique_labels = np.unique(segments)
         for segment_label in unique_labels:
@@ -244,7 +110,7 @@ class ChunkFactory:
             downsized = segment_label in labels_to_downsize
 
             # Create the chunk
-            chunk = ExactMaskChunk(
+            chunk = Chunk(
                 segment_surface=centered_surface,
                 vertices=hull_vertices,
                 config=self.config,
@@ -340,6 +206,7 @@ class ImageProcessor:
             print(f"Segment {label}: size={size}, entropy={entropy}")
 
             if size > max_size and entropy < min_entropy:
+                print('entropy', entropy)
                 # Mark this segment for downsizing
                 labels_to_downsize.append(label)
                 print(f"Marking segment {label} for downsizing.")
@@ -497,7 +364,8 @@ class Simulation:
         self.ui_bar_height = config["simulation"]["window"]["ui_bar_height"]
         self.colors = config["colors"]
 
-        self.chunks: List[ExactMaskChunk] = []
+        self.chunks: List[Chunk] = []
+        self.worm: Worm = None
 
         # Create static boundaries
         self._create_boundaries()
@@ -526,10 +394,27 @@ class Simulation:
 
     def update_chunks(self) -> None:
         """
-        Update (draw) all chunks in the simulation.
+        Update (draw) all chunks in the simulation and process worm behavior.
         """
+        # Draw chunks
         for chunk in self.chunks:
             chunk.draw(self.screen, debug_mode=self.debug_mode)
+
+        # Update worm if it exists
+        if self.worm and not self.worm.is_dead:
+            # Try to find and consume next chunk
+            next_chunk = self.worm.select_next_chunk(self.chunks)
+            if next_chunk:
+                # Remove the chunk from simulation
+                self.space.remove(next_chunk.shape, next_chunk.body)
+                self.chunks.remove(next_chunk)
+                
+                # Let the worm consume it
+                self.worm.consume_chunk(next_chunk)
+
+        # Draw worm history panel if it exists
+        if self.worm:
+            self.worm.draw(self.screen)
 
     def handle_button_click(self, mouse_pos: Tuple[int, int]) -> None:
         """
@@ -552,6 +437,9 @@ class Simulation:
         """
         image = self.image_processor.load_image_via_dialog()
         if image:
+            # Clear existing chunks and worm
+            self.clear_chunks()
+            
             # Scale the image to fit the screen
             max_width = self.width
             max_height = self.height - self.ui_bar_height
@@ -567,11 +455,15 @@ class Simulation:
             self.chunks.extend(new_chunks)
             print(f"Created {len(new_chunks)} new chunks.")
 
+            # Create a new worm
+            self.worm = Worm(self.config)
+
     def clear_chunks(self) -> None:
         """
-        Remove all chunks from the simulation.
+        Remove all chunks from the simulation and reset the worm.
         """
         for chunk in self.chunks:
             self.space.remove(chunk.shape, chunk.body)
         print(f"Removed {len(self.chunks)} chunks from the simulation.")
         self.chunks.clear()
+        self.worm = None
