@@ -203,13 +203,13 @@ class ImageProcessor:
 
             # Calculate entropy
             entropy = self._calculate_entropy(grayscale_image, mask)
-            print(f"Segment {label}: size={size}, entropy={entropy}")
+            # print(f"Segment {label}: size={size}, entropy={entropy}")
 
             if size > max_size and entropy < min_entropy:
-                print('entropy', entropy)
+                # print('entropy', entropy)
                 # Mark this segment for downsizing
                 labels_to_downsize.append(label)
-                print(f"Marking segment {label} for downsizing.")
+                # print(f"Marking segment {label} for downsizing.")
 
         return segments, labels_to_downsize
 
@@ -297,12 +297,13 @@ class UIManager:
         )
         return [upload_rect, clear_rect, quit_rect]
 
-    def draw_ui(self, debug_mode: bool) -> None:
+    def draw_ui(self, debug_mode: bool, torus_world: bool = False) -> None:
         """
         Draw the UI bar, buttons, and optional debug text.
 
         Args:
             debug_mode (bool): Whether to show debug mode status on the UI bar.
+            torus_world (bool): Whether the simulation is in torus world mode.
         """
         ui_bar_rect = pygame.Rect(0, 0, self.width, self.ui_bar_height)
         pygame.draw.rect(self.screen, self.colors["UI_BG"], ui_bar_rect)
@@ -314,7 +315,12 @@ class UIManager:
         # Show debug mode
         debug_text = f"Debug: {'ON' if debug_mode else 'OFF'} (Press D to toggle)"
         debug_surface = self.font.render(debug_text, True, self.colors["WHITE"])
-        self.screen.blit(debug_surface, (self.width - 300, (self.ui_bar_height - self.button_height) // 2))
+        self.screen.blit(debug_surface, (self.width - 300, (self.ui_bar_height - debug_surface.get_height()) // 2))
+        
+        # Show world type
+        world_text = f"World: {'Torus' if torus_world else 'Rigid Walls'}"
+        world_surface = self.font.render(world_text, True, self.colors["WHITE"])
+        self.screen.blit(world_surface, (self.width - 500, (self.ui_bar_height - world_surface.get_height()) // 2))
 
     def _draw_button(self, rect: pygame.Rect, text: str) -> None:
         """Draw a single button."""
@@ -363,42 +369,117 @@ class Simulation:
         self.height = config["simulation"]["window"]["height"]
         self.ui_bar_height = config["simulation"]["window"]["ui_bar_height"]
         self.colors = config["colors"]
+        self.torus_world = config["simulation"].get("torus_world", False)
 
         self.chunks: List[Chunk] = []
         self.worm: Worm = None
+        self.boundary_walls = []
 
-        # Create static boundaries
+        # Create boundaries
         self._create_boundaries()
 
     def _create_boundaries(self) -> None:
         """
-        Create static boundaries for the simulation area.
+        Create boundaries based on the configuration.
+        If torus_world is True, creates a torus world without walls.
+        If False, creates rigid walls around the simulation area.
+        Note: The UI bar is treated as an overlay, with rigid walls at the screen edges.
         """
-        top = self.ui_bar_height
-        static_lines = [
-            pymunk.Segment(self.space.static_body, (0, top), (self.width, top), 1),
-            pymunk.Segment(self.space.static_body, (0, top), (0, self.height), 1),
-            pymunk.Segment(self.space.static_body, (0, self.height), (self.width, self.height), 1),
-            pymunk.Segment(self.space.static_body, (self.width, top), (self.width, self.height), 1),
-        ]
-        for line in static_lines:
-            line.elasticity = 1.0
-            line.friction = 0.0
-        self.space.add(*static_lines)
+        if not self.torus_world:
+            # Create traditional rigid walls at screen edges
+            static_lines = [
+                pymunk.Segment(self.space.static_body, (0, 0), (self.width, 0), 1),
+                pymunk.Segment(self.space.static_body, (0, 0), (0, self.height), 1),
+                pymunk.Segment(self.space.static_body, (0, self.height), (self.width, self.height), 1),
+                pymunk.Segment(self.space.static_body, (self.width, 0), (self.width, self.height), 1),
+            ]
+            for line in static_lines:
+                line.elasticity = 1.0
+                line.friction = 1.0
+            self.space.add(*static_lines)
+            # Store references to these walls to be able to remove them later
+            self.boundary_walls = static_lines
+        else:
+            # For torus world, no walls are needed
+            self.boundary_walls = []
+
+    def clear_boundaries(self) -> None:
+        """
+        Remove any existing boundary walls from the space.
+        """
+        # Only attempt removal if there are walls and they were previously added
+        if hasattr(self, 'boundary_walls') and self.boundary_walls:
+            for wall in self.boundary_walls:
+                self.space.remove(wall)
+            self.boundary_walls = []
+
+    def handle_torus_wrapping(self) -> None:
+        """
+        Handle the torus wrapping for all bodies in the space.
+        If a body goes beyond an edge, wrap it to the opposite edge.
+        This creates a seamless torus world effect.
+        Note: The UI bar is treated as an overlay, with wrapping happening across the full screen.
+        """
+        # Check all bodies in the space
+        for body in self.space.bodies:
+            # Skip static bodies
+            if body.body_type == pymunk.Body.STATIC:
+                continue
+                
+            position = body.position
+            
+            # Get the shape if present (to determine object size)
+            shape = None
+            for s in self.space.shapes:
+                if s.body == body:
+                    shape = s
+                    break
+                
+            # Only teleport when completely beyond the boundary
+            # We'll use a small margin to avoid flickering at the boundaries
+            margin = 0
+            if shape:
+                # If we have a shape, use it to determine when to teleport
+                # (only when the entire shape is beyond the boundary)
+                if hasattr(shape, 'radius'):
+                    margin = shape.radius
+                elif hasattr(shape, 'get_vertices'):
+                    vertices = shape.get_vertices()
+                    if vertices:
+                        # Find furthest point from center in each direction
+                        max_x = max(abs(v.x) for v in vertices)
+                        max_y = max(abs(v.y) for v in vertices)
+                        margin = max(max_x, max_y)
+                
+            # Check x-axis boundaries - only teleport when fully beyond boundary
+            if position.x < -margin:
+                body.position = pymunk.Vec2d(self.width + position.x, position.y)
+            elif position.x > self.width + margin:
+                body.position = pymunk.Vec2d(position.x - self.width, position.y)
+                
+            # Check y-axis boundaries - treat top of screen as top boundary (ignore UI bar)
+            if position.y < -margin:
+                body.position = pymunk.Vec2d(position.x, self.height + position.y)
+            elif position.y > self.height + margin:
+                body.position = pymunk.Vec2d(position.x, position.y - self.height)
 
     def draw_ui(self) -> None:
         """
         Draw the UI bar, buttons, and debug status.
         """
-        self.ui_manager.draw_ui(self.debug_mode)
+        self.ui_manager.draw_ui(self.debug_mode, self.torus_world)
 
     def update_chunks(self) -> None:
         """
         Update (draw) all chunks in the simulation and process worm behavior.
         """
+        # Apply torus wrapping if enabled
+        if self.torus_world:
+            self.handle_torus_wrapping()
+        
         # Draw chunks
         for chunk in self.chunks:
-            chunk.draw(self.screen, debug_mode=self.debug_mode)
+            chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=self.torus_world)
 
         # Update worm if it exists
         if self.worm and not self.worm.is_dead:
@@ -414,6 +495,8 @@ class Simulation:
 
         # Draw worm history panel if it exists
         if self.worm:
+            # The worm's history panel is not affected by torus wrapping
+            # as it's a UI element, not a physics object
             self.worm.draw(self.screen)
 
     def handle_button_click(self, mouse_pos: Tuple[int, int]) -> None:
@@ -434,12 +517,13 @@ class Simulation:
     def upload_image(self) -> None:
         """
         Let the user pick an image and create chunks from its Felzenszwalb segments.
+        The UI bar is treated as an overlay, so the entire screen is available for image processing.
         """
         image = self.image_processor.load_image_via_dialog()
         if image:
-            # Scale the image to fit the screen
+            # Scale the image to fit the screen (treat UI bar as overlay)
             max_width = self.width
-            max_height = self.height - self.ui_bar_height
+            max_height = self.height  # Use full height, ignore UI bar
             image = scale_image_to_fit(image, max_width, max_height)
             print(f"Image loaded and scaled to {image.get_size()}.")
 

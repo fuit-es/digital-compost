@@ -8,6 +8,7 @@ simulation:
   gravity_y: 0
   chunk_velocity_min: -200
   chunk_velocity_max: 200
+  torus_world: false
   buttons:
     width: 120
     height: 40
@@ -15,8 +16,12 @@ simulation:
 
 worm:
   max_chunks: 100
-  min_difference: 0.05
-  max_difference: 0.06
+  appetite:
+    min_difference: 0.7
+    max_difference: 1
+    hue_weight: 0.6
+    saturation_weight: 0.2
+    value_weight: 0.2
   display_area:
     x: 10
     y: 70  # Just below the UI bar

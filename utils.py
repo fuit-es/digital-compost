@@ -85,13 +85,15 @@ def hsv_to_rgb_int(hsv: Tuple[float, float, float]) -> Tuple[int, int, int]:
 
 
 def calculate_color_contrast(hsv1: Tuple[float, float, float], 
-                           hsv2: Tuple[float, float, float]) -> float:
+                           hsv2: Tuple[float, float, float],
+                           config: Dict[str, Any]) -> float:
     """
     Calculate color difference between two HSV colors, considering hue's cyclic nature.
     
     Args:
         hsv1: First color's (Hue: 0-360, Saturation: 0-1, Value: 0-1)
         hsv2: Second color's (Hue: 0-360, Saturation: 0-1, Value: 0-1)
+        config: Configuration dictionary containing appetite weights
         
     Returns:
         float: Color difference from 0.0 to 1.0, where:
@@ -108,11 +110,17 @@ def calculate_color_contrast(hsv1: Tuple[float, float, float],
     # Calculate hue difference using circular mean
     hue_diff = np.arccos(np.cos(h1_rad - h2_rad)) / np.pi  # Normalize to 0-1
     
+    # Get weights from config
+    appetite_cfg = config["worm"]["appetite"]
+    hue_weight = appetite_cfg["hue_weight"]
+    saturation_weight = appetite_cfg["saturation_weight"]
+    value_weight = appetite_cfg["value_weight"]
+    
     # Calculate weighted differences
     return (
-        0.6 * hue_diff +  # Hue difference has most weight
-        0.2 * abs(s1 - s2) +  # Saturation difference
-        0.2 * abs(v1 - v2)    # Value difference
+        hue_weight * hue_diff +  # Hue difference
+        saturation_weight * abs(s1 - s2) +  # Saturation difference
+        value_weight * abs(v1 - v2)    # Value difference
     )
 
 

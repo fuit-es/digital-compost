@@ -25,10 +25,12 @@ class Worm:
         Args:
             config (Dict[str, Any]): The configuration dictionary.
         """
+        self.config = config  # Store the config
         worm_cfg = config["worm"]
         self.max_chunks = worm_cfg["max_chunks"]
-        self.min_difference = worm_cfg["min_difference"]  # Minimum color difference required
-        self.max_difference = worm_cfg["max_difference"]  # Maximum color difference allowed
+        appetite_cfg = worm_cfg["appetite"]
+        self.min_difference = appetite_cfg["min_difference"]  # Minimum color difference required
+        self.max_difference = appetite_cfg["max_difference"]  # Maximum color difference allowed
         
         # Panel configuration
         self.panel_x = worm_cfg["display_area"]["x"]
@@ -67,13 +69,13 @@ class Worm:
         chunk_color = calculate_chunk_color(chunk.segment_surface)
         
         # Calculate color difference between chunks
-        difference = calculate_color_contrast(self.last_color, chunk_color)
+        difference = calculate_color_contrast(self.last_color, chunk_color, self.config)
         
         # Print debug info
-        print(f"Last color (HSV): {self.last_color}")
-        print(f"Current color (HSV): {chunk_color}")
-        print(f"Color difference: {difference:.2f}")
-        print(f"Valid range: {self.min_difference} to {self.max_difference}")
+        # print(f"Last color (HSV): {self.last_color}")
+        # print(f"Current color (HSV): {chunk_color}")
+        # print(f"Color difference: {difference:.2f}")
+        # print(f"Valid range: {self.min_difference} to {self.max_difference}")
         
         # Check if difference is within thresholds
         return self.min_difference <= difference <= self.max_difference
@@ -91,7 +93,7 @@ class Worm:
         # Calculate and store HSV color
         hsv_color = calculate_chunk_color(chunk.segment_surface)
         self.last_color = hsv_color
-        print(f"Consumed chunk with HSV color: {hsv_color}")
+        # print(f"Consumed chunk with HSV color: {hsv_color}")
         
         # Create history entry with HSV color
         history_entry = WormHistory(chunk.segment_surface, hsv_color)
@@ -157,7 +159,7 @@ class Worm:
         valid_chunks = [chunk for chunk in chunks if self.is_valid_next_chunk(chunk)]
         if not valid_chunks:
             # If no valid chunks are found, the worm dies
-            print("No valid chunks found - worm dies!")
+            # print("No valid chunks found - worm dies!")
             self.is_dead = True
             return None
             

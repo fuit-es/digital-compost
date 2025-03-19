@@ -62,6 +62,12 @@ def main() -> None:
             elif event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_d:
                     simulation.debug_mode = not simulation.debug_mode
+                elif event.key == pygame.K_t:
+                    # Toggle torus world
+                    simulation.torus_world = not simulation.torus_world
+                    # Need to recreate boundaries when switching modes
+                    simulation.clear_boundaries()
+                    simulation._create_boundaries()
 
         # Fill screen with background color
         screen.fill(config["colors"]["WHITE"])
