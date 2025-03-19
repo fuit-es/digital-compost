@@ -297,13 +297,14 @@ class UIManager:
         )
         return [upload_rect, clear_rect, quit_rect]
 
-    def draw_ui(self, debug_mode: bool, torus_world: bool = False) -> None:
+    def draw_ui(self, debug_mode: bool, torus_world: bool = False, history_panel_enabled: bool = True) -> None:
         """
         Draw the UI bar, buttons, and optional debug text.
 
         Args:
             debug_mode (bool): Whether to show debug mode status on the UI bar.
             torus_world (bool): Whether the simulation is in torus world mode.
+            history_panel_enabled (bool): Whether the history panel is visible.
         """
         ui_bar_rect = pygame.Rect(0, 0, self.width, self.ui_bar_height)
         pygame.draw.rect(self.screen, self.colors["UI_BG"], ui_bar_rect)
@@ -313,14 +314,19 @@ class UIManager:
             self._draw_button(rect, text)
 
         # Show debug mode
-        debug_text = f"Debug: {'ON' if debug_mode else 'OFF'} (Press D to toggle)"
+        debug_text = f"Debug: {'ON' if debug_mode else 'OFF'} (D)"
         debug_surface = self.font.render(debug_text, True, self.colors["WHITE"])
         self.screen.blit(debug_surface, (self.width - 300, (self.ui_bar_height - debug_surface.get_height()) // 2))
         
         # Show world type
-        world_text = f"World: {'Torus' if torus_world else 'Rigid Walls'}"
+        world_text = f"World: {'Torus' if torus_world else 'Rigid Walls'} (T)"
         world_surface = self.font.render(world_text, True, self.colors["WHITE"])
         self.screen.blit(world_surface, (self.width - 500, (self.ui_bar_height - world_surface.get_height()) // 2))
+
+        # Show history panel status
+        history_text = f"History: {'ON' if history_panel_enabled else 'OFF'} (H)"
+        history_surface = self.font.render(history_text, True, self.colors["WHITE"])
+        self.screen.blit(history_surface, (self.width - 700, (self.ui_bar_height - history_surface.get_height()) // 2))
 
     def _draw_button(self, rect: pygame.Rect, text: str) -> None:
         """Draw a single button."""
@@ -467,7 +473,8 @@ class Simulation:
         """
         Draw the UI bar, buttons, and debug status.
         """
-        self.ui_manager.draw_ui(self.debug_mode, self.torus_world)
+        history_enabled = self.worm.panel_enabled if self.worm else True
+        self.ui_manager.draw_ui(self.debug_mode, self.torus_world, history_enabled)
 
     def update_chunks(self) -> None:
         """
@@ -513,6 +520,13 @@ class Simulation:
             self.clear_chunks()
         elif quit_rect.collidepoint(mouse_pos):
             quit_program()
+
+    def toggle_history_panel(self) -> None:
+        """
+        Toggle the visibility of the worm's history panel.
+        """
+        if self.worm:
+            self.worm.panel_enabled = not self.worm.panel_enabled
 
     def upload_image(self) -> None:
         """

@@ -11,7 +11,6 @@ class WormHistory:
         self.chunk_surface = chunk_surface
         self.hsv_color = hsv_color
         self.rgb_color = hsv_to_rgb_int(hsv_color)
-        self.hex_color = rgb_to_hex(self.rgb_color)
 
 
 class Worm:
@@ -33,13 +32,15 @@ class Worm:
         self.max_difference = appetite_cfg["max_difference"]  # Maximum color difference allowed
         
         # Panel configuration
-        self.panel_x = worm_cfg["display_area"]["x"]
-        self.panel_y = worm_cfg["display_area"]["y"]
-        self.panel_width = worm_cfg["display_area"]["width"]
-        self.panel_height = worm_cfg["display_area"]["height"]
+        panel_cfg = worm_cfg["history_panel"]
+        self.panel_enabled = panel_cfg["enabled"]
+        display_area = panel_cfg["display_area"]
+        self.panel_x = display_area["x"]
+        self.panel_y = display_area["y"]
+        self.panel_width = display_area["width"]
+        self.panel_height = display_area["height"]
         
         # History panel settings
-        panel_cfg = worm_cfg["history_panel"]
         self.chunk_preview_size = panel_cfg["chunk_preview_size"]
         self.text_height = panel_cfg["text_height"]
         self.spacing = panel_cfg["spacing"]
@@ -110,6 +111,10 @@ class Worm:
         Args:
             surface (pygame.Surface): The surface to draw on.
         """
+        # Only draw if panel is enabled
+        if not self.panel_enabled:
+            return
+            
         # Draw panel background
         panel_rect = pygame.Rect(self.panel_x, self.panel_y, self.panel_width, self.panel_height)
         pygame.draw.rect(surface, self.panel_bg_color, panel_rect)
@@ -130,11 +135,13 @@ class Worm:
                                     self.chunk_preview_size, self.chunk_preview_size)
             pygame.draw.rect(surface, entry.rgb_color, swatch_rect)
             
-            # Draw hex code
-            hex_text = font.render(entry.hex_color, True, (255, 255, 255))
-            text_rect = hex_text.get_rect(midleft=(swatch_rect.right + self.spacing,
-                                                 y_offset + self.chunk_preview_size // 2))
-            surface.blit(hex_text, text_rect)
+            # Draw HSV values
+            h, s, v = entry.hsv_color
+            hsv_text = f"H:{h:.0f}° S:{s:.2f} V:{v:.2f}"
+            text = font.render(hsv_text, True, (255, 255, 255))
+            text_rect = text.get_rect(midleft=(swatch_rect.right + self.spacing,
+                                             y_offset + self.chunk_preview_size // 2))
+            surface.blit(text, text_rect)
             
             y_offset += self.chunk_preview_size + self.spacing
 

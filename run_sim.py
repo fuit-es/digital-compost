@@ -68,6 +68,9 @@ def main() -> None:
                     # Need to recreate boundaries when switching modes
                     simulation.clear_boundaries()
                     simulation._create_boundaries()
+                elif event.key == pygame.K_h:
+                    # Toggle history panel
+                    simulation.toggle_history_panel()
 
         # Fill screen with background color
         screen.fill(config["colors"]["WHITE"])

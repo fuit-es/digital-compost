@@ -17,17 +17,18 @@ simulation:
 worm:
   max_chunks: 100
   appetite:
-    min_difference: 0.7
+    min_difference: 0.6
     max_difference: 1
     hue_weight: 0.6
     saturation_weight: 0.2
     value_weight: 0.2
-  display_area:
-    x: 10
-    y: 70  # Just below the UI bar
-    width: 200
-    height: 400
   history_panel:
+    enabled: true
+    display_area:
+      x: 10
+      y: 70
+      width: 300
+      height: 400
     chunk_preview_size: 50
     text_height: 20
     spacing: 10
