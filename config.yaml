@@ -22,6 +22,27 @@ worm:
     hue_weight: 0.6
     saturation_weight: 0.2
     value_weight: 0.2
+  glue:
+    enabled: true
+    max_glued_chunks: 200
+    vicinity:
+      min_difference: 0
+      max_difference: 0.05
+      hue_weight: 0.6
+      saturation_weight: 0.2
+      value_weight: 0.2
+    flocking:
+      maxspeed: 100
+      maxforce: 10
+      desired_separation: 30
+      separate_force_mult: 70
+      seek_force_mult: 60
+    visual:
+      glow_radius: 15
+      glow_color: [255, 255, 0]  # Yellow
+      pulse_speed: 0.05
+      pulse_min: 0.7
+      pulse_max: 1.0
   history_panel:
     enabled: true
     display_area:

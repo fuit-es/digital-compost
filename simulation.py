@@ -5,14 +5,14 @@ import os
 import math
 import numpy as np
 from tkinter import filedialog
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Set
 from skimage.segmentation import felzenszwalb
 from skimage.color import rgba2rgb, rgb2gray
 from skimage.util import img_as_ubyte
 from skimage.transform import resize
 from scipy.spatial import ConvexHull, QhullError
 from utils import scale_image_to_fit, quit_program
-from worm import Worm
+from worm import Worm, ChunkGlue
 from chunk_thingie import Chunk
 import sys
 
@@ -379,6 +379,7 @@ class Simulation:
 
         self.chunks: List[Chunk] = []
         self.worm: Worm = None
+        self.glues: List[ChunkGlue] = []  # List to store all active glues
         self.boundary_walls = []
 
         # Create boundaries
@@ -401,7 +402,7 @@ class Simulation:
             ]
             for line in static_lines:
                 line.elasticity = 1.0
-                line.friction = 1.0
+                line.friction = 5.0
             self.space.add(*static_lines)
             # Store references to these walls to be able to remove them later
             self.boundary_walls = static_lines
@@ -490,8 +491,11 @@ class Simulation:
 
         # Update worm if it exists
         if self.worm and not self.worm.is_dead:
+            # Get available chunks that aren't already glued by any glue
+            available_chunks = self.get_available_chunks_for_worm()
+            
             # Try to find and consume next chunk
-            next_chunk = self.worm.select_next_chunk(self.chunks)
+            next_chunk = self.worm.select_next_chunk(available_chunks)
             if next_chunk:
                 # Remove the chunk from simulation
                 self.space.remove(next_chunk.shape, next_chunk.body)
@@ -499,12 +503,78 @@ class Simulation:
                 
                 # Let the worm consume it
                 self.worm.consume_chunk(next_chunk)
+        
+        # Update the current worm's glue if it has just died
+        if self.worm and self.worm.is_dead and self.worm.glue:
+            # Only add the glue to the list if it's not already there
+            if self.worm.glue not in self.glues:
+                self.glues.append(self.worm.glue)
+        
+        # Update all glues
+        for glue in self.glues:
+            # Get chunks that aren't already glued by any glue
+            available_chunks = self.get_available_chunks_for_glue(glue)
+            # Update the glue behavior (attract and flocking)
+            glue.try_attract_chunks(available_chunks)
+            glue.update()
+            # Draw the glue
+            glue.draw(self.screen)
 
         # Draw worm history panel if it exists
         if self.worm:
             # The worm's history panel is not affected by torus wrapping
             # as it's a UI element, not a physics object
             self.worm.draw(self.screen)
+
+    def get_all_glued_chunk_ids(self) -> Set[int]:
+        """
+        Get the IDs of all chunks that are already glued by any glue.
+        
+        Returns:
+            Set[int]: Set of chunk IDs that are already glued.
+        """
+        glued_chunk_ids = set()
+        
+        # Add chunks from all glues
+        for glue in self.glues:
+            glued_chunk_ids.update(id(glued.chunk) for glued in glue.glued_chunks)
+            
+        # Add chunks from current worm's glue if it exists but isn't in the glues list yet
+        if self.worm and self.worm.is_dead and self.worm.glue and self.worm.glue not in self.glues:
+            glued_chunk_ids.update(id(glued.chunk) for glued in self.worm.glue.glued_chunks)
+            
+        return glued_chunk_ids
+            
+    def get_available_chunks_for_worm(self) -> List[Chunk]:
+        """
+        Get chunks that aren't already glued by any glue.
+        These are the chunks available for the worm to eat.
+        
+        Returns:
+            List[Chunk]: Available chunks for the worm.
+        """
+        # Get IDs of all glued chunks
+        glued_chunk_ids = self.get_all_glued_chunk_ids()
+        
+        # Return only chunks that aren't glued
+        return [chunk for chunk in self.chunks if id(chunk) not in glued_chunk_ids]
+        
+    def get_available_chunks_for_glue(self, current_glue: ChunkGlue) -> List[Chunk]:
+        """
+        Get chunks that aren't already glued by any glue.
+        These are the chunks available for a specific glue to attract.
+        
+        Args:
+            current_glue (ChunkGlue): The glue that's trying to attract chunks.
+            
+        Returns:
+            List[Chunk]: Available chunks for the glue.
+        """
+        # Get IDs of chunks already attracted by any glue
+        glued_chunk_ids = self.get_all_glued_chunk_ids()
+        
+        # Return only chunks that aren't glued by any glue
+        return [chunk for chunk in self.chunks if id(chunk) not in glued_chunk_ids]
 
     def handle_button_click(self, mouse_pos: Tuple[int, int]) -> None:
         """
@@ -535,6 +605,9 @@ class Simulation:
         """
         image = self.image_processor.load_image_via_dialog()
         if image:
+            # Reset the worm but keep existing glues
+            self.worm = None
+        
             # Scale the image to fit the screen (treat UI bar as overlay)
             max_width = self.width
             max_height = self.height  # Use full height, ignore UI bar
@@ -555,10 +628,11 @@ class Simulation:
 
     def clear_chunks(self) -> None:
         """
-        Remove all chunks from the simulation and reset the worm.
+        Remove all chunks from the simulation and reset the worm and all glues.
         """
         for chunk in self.chunks:
             self.space.remove(chunk.shape, chunk.body)
         print(f"Removed {len(self.chunks)} chunks from the simulation.")
         self.chunks.clear()
         self.worm = None
+        self.glues.clear()  # Clear all glues when clearing chunks

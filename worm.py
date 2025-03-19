@@ -1,6 +1,8 @@
 import pygame
 import random
-from typing import List, Tuple, Dict, Any, Optional
+import pymunk
+import math
+from typing import List, Tuple, Dict, Any, Optional, Set
 from utils import calculate_chunk_color, calculate_color_contrast, hsv_to_rgb_int, rgb_to_hex
 from chunk_thingie import Chunk
 
@@ -11,6 +13,212 @@ class WormHistory:
         self.chunk_surface = chunk_surface
         self.hsv_color = hsv_color
         self.rgb_color = hsv_to_rgb_int(hsv_color)
+
+
+class GlueChunk:
+    """A chunk that has been attracted to glue and follows flocking behavior."""
+    def __init__(self, chunk: Chunk, glue_center: Tuple[float, float], config: Dict[str, Any]):
+        self.chunk = chunk
+        self.glue_center = glue_center
+        self.config = config
+        flocking_cfg = config["worm"]["glue"]["flocking"]
+        self.maxspeed = flocking_cfg["maxspeed"]
+        self.maxforce = flocking_cfg["maxforce"]
+        self.desired_separation = flocking_cfg["desired_separation"]
+        self.separate_force_mult = flocking_cfg["separate_force_mult"]
+        self.seek_force_mult = flocking_cfg["seek_force_mult"]
+
+    def apply_behaviors(self, glued_chunks: List['GlueChunk']) -> None:
+        """Apply flocking behaviors (separation and seeking) to the chunk."""
+        separate_force = self.separate(glued_chunks)
+        seek_force = self.seek(self.glue_center)
+        
+        # Apply force multipliers
+        separate_force = (separate_force[0] * self.separate_force_mult, 
+                          separate_force[1] * self.separate_force_mult)
+        seek_force = (seek_force[0] * self.seek_force_mult, 
+                      seek_force[1] * self.seek_force_mult)
+        
+        # Apply forces
+        self.apply_force(separate_force)
+        self.apply_force(seek_force)
+    
+    def apply_force(self, force: Tuple[float, float]) -> None:
+        """Apply a force to the chunk's body."""
+        self.chunk.body.apply_force_at_local_point(force, (0, 0))
+    
+    def separate(self, glued_chunks: List['GlueChunk']) -> Tuple[float, float]:
+        """Calculate separation force to avoid crowding other chunks."""
+        sum_x, sum_y = 0, 0
+        count = 0
+        
+        # Get current position
+        pos = self.chunk.body.position
+        
+        # Check distance to every other chunk
+        for other in glued_chunks:
+            if other.chunk is not self.chunk:
+                other_pos = other.chunk.body.position
+                # Calculate distance between chunks
+                dx = pos.x - other_pos.x
+                dy = pos.y - other_pos.y
+                d = math.sqrt(dx*dx + dy*dy)
+                
+                # If they're too close, calculate repulsion
+                if d > 0 and d < self.desired_separation:
+                    # Weighted by distance (closer = stronger force)
+                    dx /= d
+                    dy /= d
+                    sum_x += dx
+                    sum_y += dy
+                    count += 1
+        
+        # Average the forces
+        if count > 0:
+            sum_x /= count
+            sum_y /= count
+            
+            # Normalize and scale to maximum speed
+            magnitude = math.sqrt(sum_x*sum_x + sum_y*sum_y)
+            if magnitude > 0:
+                sum_x = (sum_x / magnitude) * self.maxspeed
+                sum_y = (sum_y / magnitude) * self.maxspeed
+            
+            # Steering = Desired - Velocity
+            vel = self.chunk.body.velocity
+            sum_x -= vel.x
+            sum_y -= vel.y
+            
+            # Limit to maximum force
+            magnitude = math.sqrt(sum_x*sum_x + sum_y*sum_y)
+            if magnitude > self.maxforce:
+                sum_x = (sum_x / magnitude) * self.maxforce
+                sum_y = (sum_y / magnitude) * self.maxforce
+                
+        return (sum_x, sum_y)
+    
+    def seek(self, target: Tuple[float, float]) -> Tuple[float, float]:
+        """Calculate seeking force toward target position."""
+        # Vector pointing from location to target
+        pos = self.chunk.body.position
+        dx = target[0] - pos.x
+        dy = target[1] - pos.y
+        
+        # Normalize and scale to maximum speed
+        magnitude = math.sqrt(dx*dx + dy*dy)
+        if magnitude > 0:
+            dx = (dx / magnitude) * self.maxspeed
+            dy = (dy / magnitude) * self.maxspeed
+        
+        # Steering = Desired - Velocity
+        vel = self.chunk.body.velocity
+        dx -= vel.x
+        dy -= vel.y
+        
+        # Limit to maximum force
+        magnitude = math.sqrt(dx*dx + dy*dy)
+        if magnitude > self.maxforce:
+            dx = (dx / magnitude) * self.maxforce
+            dy = (dy / magnitude) * self.maxforce
+            
+        return (dx, dy)
+
+
+class ChunkGlue:
+    """Manages a collection of chunks attracted by a single glue point."""
+    def __init__(self, position: Tuple[float, float], worm_history: List[WormHistory], config: Dict[str, Any]):
+        self.position = position
+        self.worm_history = worm_history
+        self.config = config
+        self.glued_chunks: List[GlueChunk] = []
+        self.attracted_chunk_ids: Set[int] = set()  # Track IDs of chunks we've already attracted
+        
+        # Get glue configuration
+        self.glue_cfg = config["worm"]["glue"]
+        self.max_glued_chunks = self.glue_cfg["max_glued_chunks"]
+        self.vicinity_cfg = self.glue_cfg["vicinity"]
+        self.min_difference = self.vicinity_cfg["min_difference"]
+        self.max_difference = self.vicinity_cfg["max_difference"]
+        
+        # Glowing effect parameters from config
+        visual_cfg = self.glue_cfg.get("visual", {})
+        self.glow_radius = visual_cfg.get("glow_radius", 15)
+        self.glow_color = tuple(visual_cfg.get("glow_color", [255, 255, 0]))
+        self.pulse_speed = visual_cfg.get("pulse_speed", 0.05)
+        self.pulse_min = visual_cfg.get("pulse_min", 0.7)
+        self.pulse_max = visual_cfg.get("pulse_max", 1.0)
+        self.pulse_time = 0
+    
+    def is_in_vicinity(self, chunk: Chunk) -> bool:
+        """Check if a chunk's color is in the vicinity of any meal in the worm's history."""
+        # Get this chunk's color
+        chunk_color = calculate_chunk_color(chunk.segment_surface)
+        
+        # Check against each meal in history
+        for entry in self.worm_history:
+            meal_color = entry.hsv_color
+            
+            # Calculate color difference
+            difference = calculate_color_contrast(meal_color, chunk_color, self.config)
+            
+            # Check if difference is within thresholds
+            if self.min_difference <= difference <= self.max_difference:
+                return True
+                
+        return False
+    
+    def try_attract_chunks(self, available_chunks: List[Chunk]) -> None:
+        """Try to attract chunks that are in the vicinity of any meal in the worm's history."""
+        # Skip if we've reached the maximum number of glued chunks
+        if len(self.glued_chunks) >= self.max_glued_chunks:
+            return
+            
+        # Find all chunks in vicinity that aren't already attracted
+        for chunk in available_chunks:
+            # Skip chunks we've already evaluated or attracted
+            chunk_id = id(chunk)
+            if chunk_id in self.attracted_chunk_ids:
+                continue
+                
+            # Mark as evaluated
+            self.attracted_chunk_ids.add(chunk_id)
+            
+            # Check if in vicinity of any meal
+            if self.is_in_vicinity(chunk):
+                # Add to glued chunks if we haven't reached max
+                if len(self.glued_chunks) < self.max_glued_chunks:
+                    self.glued_chunks.append(GlueChunk(chunk, self.position, self.config))
+    
+    def update(self) -> None:
+        """Update the behavior of all glued chunks."""
+        # Update pulsing effect
+        self.pulse_time += self.pulse_speed
+        
+        # Apply flocking behavior
+        for glued_chunk in self.glued_chunks:
+            glued_chunk.apply_behaviors(self.glued_chunks)
+            
+    def draw(self, surface: pygame.Surface) -> None:
+        """Draw the glue as a glowing yellow dot."""
+        # Create pulsing effect for glow
+        pulse_factor = self.pulse_min + (self.pulse_max - self.pulse_min) * math.sin(self.pulse_time)
+        
+        # Draw outer glow (semi-transparent yellow)
+        outer_radius = int(self.glow_radius * 2 * pulse_factor)
+        glow_surface = pygame.Surface((outer_radius * 2, outer_radius * 2), pygame.SRCALPHA)
+        
+        # Create radial gradient from center
+        for r in range(outer_radius, 0, -1):
+            alpha = max(0, 150 - (r * 150 // outer_radius))  # Fades from 150 to 0 alpha
+            pygame.draw.circle(glow_surface, self.glow_color + (alpha,), (outer_radius, outer_radius), r)
+        
+        # Draw the core of the glow (solid yellow)
+        core_radius = int(self.glow_radius * pulse_factor)
+        pygame.draw.circle(glow_surface, self.glow_color + (255,), (outer_radius, outer_radius), core_radius)
+        
+        # Draw onto main surface at the glue position
+        glow_rect = glow_surface.get_rect(center=(int(self.position[0]), int(self.position[1])))
+        surface.blit(glow_surface, glow_rect)
 
 
 class Worm:
@@ -52,6 +260,13 @@ class Worm:
         self.history: List[WormHistory] = []
         self.last_color: Optional[Tuple[float, float, float]] = None
         self.is_dead = False
+        
+        # Last chunk reference and glue
+        self.last_chunk: Optional[Chunk] = None
+        self.glue: Optional[ChunkGlue] = None
+        
+        # Glue configuration
+        self.glue_enabled = worm_cfg.get("glue", {}).get("enabled", False)
 
     def is_valid_next_chunk(self, chunk: Chunk) -> bool:
         """
@@ -91,6 +306,9 @@ class Worm:
         if self.is_dead:
             return
             
+        # Store reference to the last chunk consumed
+        self.last_chunk = chunk
+            
         # Calculate and store HSV color
         hsv_color = calculate_chunk_color(chunk.segment_surface)
         self.last_color = hsv_color
@@ -102,16 +320,28 @@ class Worm:
         
         # Check if worm should die
         if len(self.history) >= self.max_chunks:
-            self.is_dead = True
+            self.mark_as_dead()
+
+    def mark_as_dead(self) -> None:
+        """Mark the worm as dead and create glue at the last meal site if enabled."""
+        self.is_dead = True
+        
+        # Create glue at the last meal site if enabled and we have at least one meal
+        if self.glue_enabled and self.last_chunk is not None and len(self.history) > 0:
+            # Get position of last chunk
+            position = (self.last_chunk.body.position.x, self.last_chunk.body.position.y)
+            
+            # Create new glue at this position
+            self.glue = ChunkGlue(position, self.history, self.config)
 
     def draw(self, surface: pygame.Surface) -> None:
         """
-        Draw the worm's history panel.
+        Draw the worm's history panel and glue if it exists.
         
         Args:
             surface (pygame.Surface): The surface to draw on.
         """
-        # Only draw if panel is enabled
+        # Only draw panel if enabled
         if not self.panel_enabled:
             return
             
@@ -167,7 +397,7 @@ class Worm:
         if not valid_chunks:
             # If no valid chunks are found, the worm dies
             # print("No valid chunks found - worm dies!")
-            self.is_dead = True
+            self.mark_as_dead()
             return None
             
         return random.choice(valid_chunks) 
