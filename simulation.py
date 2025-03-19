@@ -12,7 +12,7 @@ from skimage.util import img_as_ubyte
 from skimage.transform import resize
 from scipy.spatial import ConvexHull, QhullError
 from utils import scale_image_to_fit, quit_program
-from worm import Worm, ChunkGlue
+from worm import Worm, Glue
 from chunk_thingie import Chunk
 import sys
 
@@ -379,7 +379,7 @@ class Simulation:
 
         self.chunks: List[Chunk] = []
         self.worm: Worm = None
-        self.glues: List[ChunkGlue] = []  # List to store all active glues
+        self.glues: List[Glue] = []  # List to store all active glues
         self.boundary_walls = []
 
         # Create boundaries
@@ -559,13 +559,13 @@ class Simulation:
         # Return only chunks that aren't glued
         return [chunk for chunk in self.chunks if id(chunk) not in glued_chunk_ids]
         
-    def get_available_chunks_for_glue(self, current_glue: ChunkGlue) -> List[Chunk]:
+    def get_available_chunks_for_glue(self, current_glue: Glue) -> List[Chunk]:
         """
         Get chunks that aren't already glued by any glue.
         These are the chunks available for a specific glue to attract.
         
         Args:
-            current_glue (ChunkGlue): The glue that's trying to attract chunks.
+            current_glue (Glue): The glue that's trying to attract chunks.
             
         Returns:
             List[Chunk]: Available chunks for the glue.

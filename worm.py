@@ -15,7 +15,7 @@ class WormHistory:
         self.rgb_color = hsv_to_rgb_int(hsv_color)
 
 
-class GlueChunk:
+class GluedChunk:
     """A chunk that has been attracted to glue and follows flocking behavior."""
     def __init__(self, chunk: Chunk, glue_center: Tuple[float, float], config: Dict[str, Any]):
         self.chunk = chunk
@@ -28,7 +28,7 @@ class GlueChunk:
         self.separate_force_mult = flocking_cfg["separate_force_mult"]
         self.seek_force_mult = flocking_cfg["seek_force_mult"]
 
-    def apply_behaviors(self, glued_chunks: List['GlueChunk']) -> None:
+    def apply_behaviors(self, glued_chunks: List['GluedChunk']) -> None:
         """Apply flocking behaviors (separation and seeking) to the chunk."""
         separate_force = self.separate(glued_chunks)
         seek_force = self.seek(self.glue_center)
@@ -47,7 +47,7 @@ class GlueChunk:
         """Apply a force to the chunk's body."""
         self.chunk.body.apply_force_at_local_point(force, (0, 0))
     
-    def separate(self, glued_chunks: List['GlueChunk']) -> Tuple[float, float]:
+    def separate(self, glued_chunks: List['GluedChunk']) -> Tuple[float, float]:
         """Calculate separation force to avoid crowding other chunks."""
         sum_x, sum_y = 0, 0
         count = 0
@@ -124,13 +124,13 @@ class GlueChunk:
         return (dx, dy)
 
 
-class ChunkGlue:
+class Glue:
     """Manages a collection of chunks attracted by a single glue point."""
     def __init__(self, position: Tuple[float, float], worm_history: List[WormHistory], config: Dict[str, Any]):
         self.position = position
         self.worm_history = worm_history
         self.config = config
-        self.glued_chunks: List[GlueChunk] = []
+        self.glued_chunks: List[GluedChunk] = []
         self.attracted_chunk_ids: Set[int] = set()  # Track IDs of chunks we've already attracted
         
         # Get glue configuration
@@ -187,7 +187,7 @@ class ChunkGlue:
             if self.is_in_vicinity(chunk):
                 # Add to glued chunks if we haven't reached max
                 if len(self.glued_chunks) < self.max_glued_chunks:
-                    self.glued_chunks.append(GlueChunk(chunk, self.position, self.config))
+                    self.glued_chunks.append(GluedChunk(chunk, self.position, self.config))
     
     def update(self) -> None:
         """Update the behavior of all glued chunks."""
@@ -263,7 +263,7 @@ class Worm:
         
         # Last chunk reference and glue
         self.last_chunk: Optional[Chunk] = None
-        self.glue: Optional[ChunkGlue] = None
+        self.glue: Optional[Glue] = None
         
         # Glue configuration
         self.glue_enabled = worm_cfg.get("glue", {}).get("enabled", False)
@@ -332,7 +332,7 @@ class Worm:
             position = (self.last_chunk.body.position.x, self.last_chunk.body.position.y)
             
             # Create new glue at this position
-            self.glue = ChunkGlue(position, self.history, self.config)
+            self.glue = Glue(position, self.history, self.config)
 
     def draw(self, surface: pygame.Surface) -> None:
         """
