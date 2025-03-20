@@ -65,7 +65,7 @@ class Chunk:
 
         self.shape = pymunk.Poly(self.body, self.vertices)
         self.shape.elasticity = 1.0
-        self.shape.friction = 0.0
+        self.shape.friction = 5.0
         self.shape.filter = pymunk.ShapeFilter(group=1)
 
         self.space.add(self.body, self.shape)
@@ -193,3 +193,112 @@ class Chunk:
                     for v in self.shape.get_vertices()
                 ]
                 pygame.draw.polygon(surface, colors["RED"], transformed_vertices, width=1) 
+
+
+class GluedChunk:
+    """A chunk that has been attracted to glue and follows flocking behavior."""
+    def __init__(self, chunk: Chunk, glue_center: Tuple[float, float], config: Dict[str, Any]):
+        self.chunk = chunk
+        self.glue_center = glue_center
+        self.config = config
+        flocking_cfg = config["worm"]["glue"]["flocking"]
+        self.maxspeed = flocking_cfg["maxspeed"]
+        self.maxforce = flocking_cfg["maxforce"]
+        self.desired_separation = flocking_cfg["desired_separation"]
+        self.separate_force_mult = flocking_cfg["separate_force_mult"]
+        self.seek_force_mult = flocking_cfg["seek_force_mult"]
+
+    def apply_behaviors(self, glued_chunks: List['GluedChunk']) -> None:
+        """Apply flocking behaviors (separation and seeking) to the chunk."""
+        separate_force = self.separate(glued_chunks)
+        seek_force = self.seek(self.glue_center)
+
+        # Apply force multipliers
+        separate_force = (separate_force[0] * self.separate_force_mult,
+                          separate_force[1] * self.separate_force_mult)
+        seek_force = (seek_force[0] * self.seek_force_mult,
+                      seek_force[1] * self.seek_force_mult)
+
+        # Apply forces
+        self.apply_force(separate_force)
+        self.apply_force(seek_force)
+
+    def apply_force(self, force: Tuple[float, float]) -> None:
+        """Apply a force to the chunk's body."""
+        self.chunk.body.apply_force_at_local_point(force, (0, 0))
+
+    def separate(self, glued_chunks: List['GluedChunk']) -> Tuple[float, float]:
+        """Calculate separation force to avoid crowding other chunks."""
+        sum_x, sum_y = 0, 0
+        count = 0
+
+        # Get current position
+        pos = self.chunk.body.position
+
+        # Check distance to every other chunk
+        for other in glued_chunks:
+            if other.chunk is not self.chunk:
+                other_pos = other.chunk.body.position
+                # Calculate distance between chunks
+                dx = pos.x - other_pos.x
+                dy = pos.y - other_pos.y
+                d = math.sqrt(dx*dx + dy*dy)
+
+                # If they're too close, calculate repulsion
+                if d > 0 and d < self.desired_separation:
+                    # Weighted by distance (closer = stronger force)
+                    dx /= d
+                    dy /= d
+                    sum_x += dx
+                    sum_y += dy
+                    count += 1
+
+        # Average the forces
+        if count > 0:
+            sum_x /= count
+            sum_y /= count
+
+            # Normalize and scale to maximum speed
+            magnitude = math.sqrt(sum_x*sum_x + sum_y*sum_y)
+            if magnitude > 0:
+                sum_x = (sum_x / magnitude) * self.maxspeed
+                sum_y = (sum_y / magnitude) * self.maxspeed
+
+            # Steering = Desired - Velocity
+            vel = self.chunk.body.velocity
+            sum_x -= vel.x
+            sum_y -= vel.y
+
+            # Limit to maximum force
+            magnitude = math.sqrt(sum_x*sum_x + sum_y*sum_y)
+            if magnitude > self.maxforce:
+                sum_x = (sum_x / magnitude) * self.maxforce
+                sum_y = (sum_y / magnitude) * self.maxforce
+
+        return (sum_x, sum_y)
+
+    def seek(self, target: Tuple[float, float]) -> Tuple[float, float]:
+        """Calculate seeking force toward target position."""
+        # Vector pointing from location to target
+        pos = self.chunk.body.position
+        dx = target[0] - pos.x
+        dy = target[1] - pos.y
+
+        # Normalize and scale to maximum speed
+        magnitude = math.sqrt(dx*dx + dy*dy)
+        if magnitude > 0:
+            dx = (dx / magnitude) * self.maxspeed
+            dy = (dy / magnitude) * self.maxspeed
+
+        # Steering = Desired - Velocity
+        vel = self.chunk.body.velocity
+        dx -= vel.x
+        dy -= vel.y
+
+        # Limit to maximum force
+        magnitude = math.sqrt(dx*dx + dy*dy)
+        if magnitude > self.maxforce:
+            dx = (dx / magnitude) * self.maxforce
+            dy = (dy / magnitude) * self.maxforce
+
+        return (dx, dy)

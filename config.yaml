@@ -1,9 +1,9 @@
 simulation:
   window:
-    width: 1200
+    width: 1600
     height: 1000
     ui_bar_height: 60
-  fps: 60
+  fps: 30
   gravity_x: 0
   gravity_y: 0
   chunk_velocity_min: -200
@@ -27,16 +27,22 @@ worm:
     max_glued_chunks: 200
     vicinity:
       min_difference: 0
-      max_difference: 0.05
+      max_difference: 0.1
       hue_weight: 0.6
       saturation_weight: 0.2
       value_weight: 0.2
     flocking:
-      maxspeed: 100
+      # maxspeed: 50
+      # maxforce: 10
+      # desired_separation: 30
+      # separate_force_mult: 70
+      # seek_force_mult: 60
+      #     flocking:
+      maxspeed: 70
       maxforce: 10
-      desired_separation: 30
+      desired_separation: 20
       separate_force_mult: 70
-      seek_force_mult: 60
+      seek_force_mult: 50
     visual:
       glow_radius: 15
       glow_color: [255, 255, 0]  # Yellow

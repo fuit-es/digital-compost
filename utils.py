@@ -63,27 +63,6 @@ def calculate_chunk_color(surface: pygame.Surface) -> Tuple[float, float, float]
         return (0.0, 0.0, 0.0)
 
 
-def hsv_to_rgb_int(hsv: Tuple[float, float, float]) -> Tuple[int, int, int]:
-    """
-    Convert HSV color to RGB integers (0-255).
-    
-    Args:
-        hsv: (Hue: 0-360, Saturation: 0-1, Value: 0-1)
-        
-    Returns:
-        Tuple[int, int, int]: RGB values in 0-255 range
-    """
-    h, s, v = hsv
-    # Convert to skimage format (all values 0-1)
-    h = h / 360.0
-    # Reshape for skimage
-    hsv_array = np.array([[[h, s, v]]])
-    # Convert to RGB
-    rgb_array = hsv2rgb(hsv_array)
-    # Convert to 0-255 range and return as tuple
-    return tuple(int(x * 255) for x in rgb_array[0, 0])
-
-
 def calculate_color_contrast(hsv1: Tuple[float, float, float], 
                            hsv2: Tuple[float, float, float],
                            config: Dict[str, Any]) -> float:
@@ -122,6 +101,27 @@ def calculate_color_contrast(hsv1: Tuple[float, float, float],
         saturation_weight * abs(s1 - s2) +  # Saturation difference
         value_weight * abs(v1 - v2)    # Value difference
     )
+
+
+def hsv_to_rgb_int(hsv: Tuple[float, float, float]) -> Tuple[int, int, int]:
+    """
+    Convert HSV color to RGB integers (0-255).
+    
+    Args:
+        hsv: (Hue: 0-360, Saturation: 0-1, Value: 0-1)
+        
+    Returns:
+        Tuple[int, int, int]: RGB values in 0-255 range
+    """
+    h, s, v = hsv
+    # Convert to skimage format (all values 0-1)
+    h = h / 360.0
+    # Reshape for skimage
+    hsv_array = np.array([[[h, s, v]]])
+    # Convert to RGB
+    rgb_array = hsv2rgb(hsv_array)
+    # Convert to 0-255 range and return as tuple
+    return tuple(int(x * 255) for x in rgb_array[0, 0])
 
 
 def rgb_to_hex(rgb: Tuple[int, int, int]) -> str:
