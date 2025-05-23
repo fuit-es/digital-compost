@@ -284,11 +284,18 @@ class GluedChunk:
         dx = target[0] - pos.x
         dy = target[1] - pos.y
 
+        # Calculate distance to target
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        # Scale force based on distance (stronger when far, weaker when close)
+        distance_factor = min(1.0, distance / 100.0)  # Adjust denominator as needed
+        
         # Normalize and scale to maximum speed
-        magnitude = math.sqrt(dx*dx + dy*dy)
-        if magnitude > 0:
-            dx = (dx / magnitude) * self.maxspeed
-            dy = (dy / magnitude) * self.maxspeed
+        if distance > 0:
+            dx = (dx / distance) * self.maxspeed * distance_factor
+            dy = (dy / distance) * self.maxspeed * distance_factor
+        else:
+            dx = dy = 0
 
         # Steering = Desired - Velocity
         vel = self.chunk.body.velocity
