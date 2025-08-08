@@ -15,7 +15,7 @@ simulation:
     gap: 10
 
 worm:
-  max_chunks: 20
+  max_chunks: 15
   appetite:
     min_difference: 0.6
     max_difference: 1
@@ -27,7 +27,7 @@ worm:
     max_glued_chunks: 100
     vicinity:
       min_difference: 0
-      max_difference: 0.2
+      max_difference: 0.07
       hue_weight: 0.6
       saturation_weight: 0.2
       value_weight: 0.2
@@ -44,8 +44,8 @@ worm:
       separate_force_mult: 70
       seek_force_mult: 50
     visual:
+      enabled: true
       glow_radius: 15
-      glow_color: [255, 255, 0]  # Yellow
       pulse_speed: 0.05
       pulse_min: 0.7
       pulse_max: 1.0
@@ -75,7 +75,7 @@ segmentation:
 compression:
   max_size: 10000
   min_entropy: 10
-  downsample_factor: 0.1
+  downsample_factor: 0.3
 
 colors:
   BLACK: [0, 0, 0]

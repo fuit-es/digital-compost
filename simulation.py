@@ -364,6 +364,8 @@ class Simulation:
         self.screen = screen
         self.font = font
         self.debug_mode = False
+        self.glue_visuals_enabled = config["worm"]["glue"]["visual"].get("enabled", True)
+        self.history_panel_enabled = config["worm"]["history_panel"]["enabled"]
 
         # Build sub-components
         self.ui_manager = UIManager(config, screen, font)
@@ -379,6 +381,7 @@ class Simulation:
 
         self.chunks: List[Chunk] = []
         self.worm: Worm = None
+        self.worms: List[Worm] = []
         self.glues: List[Glue] = []  # List to store all active glues
         self.boundary_walls = []
 
@@ -474,8 +477,7 @@ class Simulation:
         """
         Draw the UI bar, buttons, and debug status.
         """
-        history_enabled = self.worm.panel_enabled if self.worm else True
-        self.ui_manager.draw_ui(self.debug_mode, self.torus_world, history_enabled)
+        self.ui_manager.draw_ui(self.debug_mode, self.torus_world, self.history_panel_enabled)
 
     def update_chunks(self) -> None:
         """
@@ -484,47 +486,48 @@ class Simulation:
         # Apply torus wrapping if enabled
         if self.torus_world:
             self.handle_torus_wrapping()
-        
-        # Draw chunks
+        # Draw non-glued chunks
+        glued_chunk_ids = self.get_all_glued_chunk_ids()
         for chunk in self.chunks:
-            chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=self.torus_world)
-
+            if id(chunk) not in glued_chunk_ids:
+                chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=self.torus_world)
+        # Draw glued chunks and glue visuals if enabled
+        if self.glue_visuals_enabled:
+            for glue in self.glues:
+                for glued_chunk in glue.glued_chunks:
+                    glued_chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=self.torus_world)
+            for glue in self.glues:
+                glue.draw(self.screen)
+        else:
+            # Draw glued chunks without tint
+            for glue in self.glues:
+                for glued_chunk in glue.glued_chunks:
+                    glued_chunk.chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=self.torus_world)
         # Update worm if it exists
         if self.worm and not self.worm.is_dead:
-            # Get available chunks that aren't already glued by any glue
             available_chunks = self.get_available_chunks_for_worm()
-            
-            # Try to find and consume next chunk
             next_chunk = self.worm.select_next_chunk(available_chunks)
             if next_chunk:
-                # Remove the chunk from simulation
                 self.space.remove(next_chunk.shape, next_chunk.body)
                 self.chunks.remove(next_chunk)
-                
-                # Let the worm consume it
                 self.worm.consume_chunk(next_chunk)
-        
         # Update the current worm's glue if it has just died
         if self.worm and self.worm.is_dead and self.worm.glue:
-            # Only add the glue to the list if it's not already there
             if self.worm.glue not in self.glues:
                 self.glues.append(self.worm.glue)
-        
         # Update all glues
         for glue in self.glues:
-            # Get chunks that aren't already glued by any glue
             available_chunks = self.get_available_chunks_for_glue(glue)
-            # Update the glue behavior (attract and flocking)
             glue.try_attract_chunks(available_chunks)
             glue.update()
-            # Draw the glue
-            glue.draw(self.screen)
-
-        # Draw worm history panel if it exists
-        if self.worm:
-            # The worm's history panel is not affected by torus wrapping
-            # as it's a UI element, not a physics object
-            self.worm.draw(self.screen)
+            if self.glue_visuals_enabled:
+                glue.draw(self.screen)
+        # Draw worm history panels for all worms, offsetting each to the right
+        panel_spacing = 20
+        for i, worm in enumerate(self.worms):
+            if worm:
+                x_offset = i * (worm.panel_width + panel_spacing)
+                worm.draw(self.screen, x_offset=x_offset)
 
     def get_all_glued_chunk_ids(self) -> Set[int]:
         """
@@ -593,10 +596,11 @@ class Simulation:
 
     def toggle_history_panel(self) -> None:
         """
-        Toggle the visibility of the worm's history panel.
+        Toggle the visibility of all worm history panels.
         """
-        if self.worm:
-            self.worm.panel_enabled = not self.worm.panel_enabled
+        self.history_panel_enabled = not self.history_panel_enabled
+        for worm in self.worms:
+            worm.panel_enabled = self.history_panel_enabled
 
     def upload_image(self) -> None:
         """
@@ -624,7 +628,11 @@ class Simulation:
             print(f"Created {len(new_chunks)} new chunks.")
 
             # Create a new worm each time an image is uploaded
-            self.worm = Worm(self.config)
+            new_worm = Worm(self.config)
+            # Set panel enabled based on global state
+            new_worm.panel_enabled = self.history_panel_enabled
+            self.worm = new_worm
+            self.worms.append(new_worm)
 
     def clear_chunks(self) -> None:
         """
@@ -635,4 +643,5 @@ class Simulation:
         print(f"Removed {len(self.chunks)} chunks from the simulation.")
         self.chunks.clear()
         self.worm = None
+        self.worms.clear()
         self.glues.clear()  # Clear all glues when clearing chunks

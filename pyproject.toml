@@ -19,7 +19,17 @@ opencv-python = "^4.10.0.84"
 shapely = "^2.0.6"
 pymunk = "^6.9.0"
 pyaml = "^25.1.0"
+librosa = "^0.11.0"
+ipywidgets = "^8.1.7"
+plotly = "^6.1.1"
+nbformat = "^5.10.4"
+asteroid = "^0.7.0"
+demucs = "^4.0.1"
+soundfile = "^0.13.1"
 
+
+[tool.poetry.group.dev.dependencies]
+ipykernel = "^6.29.5"
 
 [build-system]
 requires = ["poetry-core"]

@@ -39,6 +39,9 @@ class Glue:
         self.pulse_min = visual_cfg.get("pulse_min", 0.7)
         self.pulse_max = visual_cfg.get("pulse_max", 1.0)
         self.pulse_time = 0
+        # Assign a unique random hue for this glue
+        self.hue = random.uniform(0, 360)
+        self.tint_rgb = hsv_to_rgb_int((self.hue, 0.7, 1.0))
     
     def is_in_vicinity(self, chunk: Chunk) -> bool:
         """Check if a chunk's color is in the vicinity of any meal in the worm's history."""
@@ -78,7 +81,7 @@ class Glue:
             if self.is_in_vicinity(chunk):
                 # Add to glued chunks if we haven't reached max
                 if len(self.glued_chunks) < self.max_glued_chunks:
-                    self.glued_chunks.append(GluedChunk(chunk, self.position, self.config))
+                    self.glued_chunks.append(GluedChunk(chunk, self.position, self.config, self.tint_rgb))
     
     def update(self) -> None:
         """Update the behavior of all glued chunks."""
@@ -90,23 +93,18 @@ class Glue:
             glued_chunk.apply_behaviors(self.glued_chunks)
             
     def draw(self, surface: pygame.Surface) -> None:
-        """Draw the glue as a glowing yellow dot."""
+        """Draw the glue as a glowing dot matching the glue's tint color."""
         # Create pulsing effect for glow
         pulse_factor = self.pulse_min + (self.pulse_max - self.pulse_min) * math.sin(self.pulse_time)
-        
-        # Draw outer glow (semi-transparent yellow)
+        # Draw outer glow (semi-transparent, tinted)
         outer_radius = int(self.glow_radius * 2 * pulse_factor)
         glow_surface = pygame.Surface((outer_radius * 2, outer_radius * 2), pygame.SRCALPHA)
-        
-        # Create radial gradient from center
         for r in range(outer_radius, 0, -1):
             alpha = max(0, 150 - (r * 150 // outer_radius))  # Fades from 150 to 0 alpha
-            pygame.draw.circle(glow_surface, self.glow_color + (alpha,), (outer_radius, outer_radius), r)
-        
-        # Draw the core of the glow (solid yellow)
+            pygame.draw.circle(glow_surface, self.tint_rgb + (alpha,), (outer_radius, outer_radius), r)
+        # Draw the core of the glow (solid, tinted)
         core_radius = int(self.glow_radius * pulse_factor)
-        pygame.draw.circle(glow_surface, self.glow_color + (255,), (outer_radius, outer_radius), core_radius)
-        
+        pygame.draw.circle(glow_surface, self.tint_rgb + (255,), (outer_radius, outer_radius), core_radius)
         # Draw onto main surface at the glue position
         glow_rect = glow_surface.get_rect(center=(int(self.position[0]), int(self.position[1])))
         surface.blit(glow_surface, glow_rect)
@@ -225,37 +223,32 @@ class Worm:
             # Create new glue at this position
             self.glue = Glue(position, self.history, self.config)
 
-    def draw(self, surface: pygame.Surface) -> None:
+    def draw(self, surface: pygame.Surface, x_offset: int = 0) -> None:
         """
         Draw the worm's history panel and glue if it exists.
-        
         Args:
             surface (pygame.Surface): The surface to draw on.
+            x_offset (int): Horizontal offset for the panel (for multi-worm display).
         """
         # Only draw panel if enabled
         if not self.panel_enabled:
             return
-            
         # Draw panel background
-        panel_rect = pygame.Rect(self.panel_x, self.panel_y, self.panel_width, self.panel_height)
+        panel_rect = pygame.Rect(self.panel_x + x_offset, self.panel_y, self.panel_width, self.panel_height)
         pygame.draw.rect(surface, self.panel_bg_color, panel_rect)
-        
         # Draw each history entry
         font = pygame.font.SysFont(None, self.text_height)
         y_offset = self.panel_y + self.spacing
-        
         for entry in self.history:
             # Draw chunk preview
             preview = pygame.transform.scale(entry.chunk_surface, 
                                           (self.chunk_preview_size, self.chunk_preview_size))
-            preview_rect = preview.get_rect(topleft=(self.panel_x + self.spacing, y_offset))
+            preview_rect = preview.get_rect(topleft=(self.panel_x + self.spacing + x_offset, y_offset))
             surface.blit(preview, preview_rect)
-            
             # Draw color swatch
             swatch_rect = pygame.Rect(preview_rect.right + self.spacing, y_offset,
                                     self.chunk_preview_size, self.chunk_preview_size)
             pygame.draw.rect(surface, entry.rgb_color, swatch_rect)
-            
             # Draw HSV values
             h, s, v = entry.hsv_color
             hsv_text = f"H:{h:.0f}° S:{s:.2f} V:{v:.2f}"
@@ -263,7 +256,6 @@ class Worm:
             text_rect = text.get_rect(midleft=(swatch_rect.right + self.spacing,
                                              y_offset + self.chunk_preview_size // 2))
             surface.blit(text, text_rect)
-            
             y_offset += self.chunk_preview_size + self.spacing
 
     def select_next_chunk(self, chunks: List[Chunk]) -> Optional[Chunk]:

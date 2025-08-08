@@ -117,7 +117,6 @@ class Chunk:
         Draw the chunk on a Pygame surface.
         In torus mode, handles drawing the chunk at multiple positions when crossing boundaries.
         The UI bar is treated as an overlay only - wrapping happens across the full screen.
-        
         Args:
             surface (pygame.Surface): The surface to draw on.
             debug_mode (bool): Whether to draw debug outlines.
@@ -197,10 +196,11 @@ class Chunk:
 
 class GluedChunk:
     """A chunk that has been attracted to glue and follows flocking behavior."""
-    def __init__(self, chunk: Chunk, glue_center: Tuple[float, float], config: Dict[str, Any]):
+    def __init__(self, chunk: Chunk, glue_center: Tuple[float, float], config: Dict[str, Any], tint_rgb: tuple):
         self.chunk = chunk
         self.glue_center = glue_center
         self.config = config
+        self.tint_rgb = tint_rgb
         flocking_cfg = config["worm"]["glue"]["flocking"]
         self.maxspeed = flocking_cfg["maxspeed"]
         self.maxforce = flocking_cfg["maxforce"]
@@ -309,3 +309,10 @@ class GluedChunk:
             dy = (dy / magnitude) * self.maxforce
 
         return (dx, dy)
+
+    def draw(self, surface: pygame.Surface, debug_mode: bool = False, torus_world: bool = False):
+        # Draw the chunk normally
+        self.chunk.draw(surface, debug_mode=debug_mode, torus_world=torus_world)
+        # Draw a small dot at the centroid in the glue's color
+        centroid = self.chunk.body.position
+        pygame.draw.circle(surface, self.tint_rgb, (int(centroid.x), int(centroid.y)), 5)

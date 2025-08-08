@@ -71,6 +71,8 @@ def main() -> None:
                 elif event.key == pygame.K_h:
                     # Toggle history panel
                     simulation.toggle_history_panel()
+                elif event.key == pygame.K_g:
+                    simulation.glue_visuals_enabled = not simulation.glue_visuals_enabled
 
         # Fill screen with background color
         screen.fill(config["colors"]["WHITE"])
