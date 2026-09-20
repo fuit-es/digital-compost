@@ -27,13 +27,13 @@ uv python install 3.13
 ### 3. Clone the repository
 
 ```bash
-git clone https://github.com/svvimming/fuites-anarchive.git
+git clone https://github.com/fuit-es/digital-compost.git
 ```
 
-### 4. Navigate to compost
+### 4. Navigate to the project
 
 ```bash
-cd fuites-anarchive/packages/compost
+cd digital-compost
 ```
 
 ### 5. Install dependencies

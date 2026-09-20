@@ -56,7 +56,7 @@ def main() -> None:
         if win_cfg.get("height") == "auto":
             win_cfg["height"] = usable_h
     screen = pygame.display.set_mode((win_cfg["width"], win_cfg["height"]))
-    pygame.display.set_caption("Fuit.es Compost")
+    pygame.display.set_caption("Fuit.es Digital Compost")
     font = pygame.font.SysFont(None, 24)
 
     # Initialize Pymunk space
