@@ -46,8 +46,8 @@ class UIManager:
             ("plus", "U", 36),
             ("rec_in", "I", 52),
             ("rec_out", "O", 58),
-            ("clear", "C", 36),
             ("export", "E", 36),
+            ("clear", "C", 36),
             ("quit", "Q", 36),
         ]
 
@@ -277,7 +277,7 @@ class UIManager:
     # ----------------------------------------------------------------
     def handle_click(self, mouse_pos: Tuple[int, int]) -> str:
         """Check if a button was clicked and return which one."""
-        button_names = ["upload", "audio_in", "audio_out", "clear", "export", "quit"]
+        button_names = ["upload", "audio_in", "audio_out", "export", "clear", "quit"]
         for rect, name in zip(self.buttons, button_names):
             if rect.collidepoint(mouse_pos):
                 return name
