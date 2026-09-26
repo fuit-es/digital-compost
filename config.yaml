@@ -84,6 +84,28 @@ worm:
     # hue_weight: 0.6
     # saturation_weight: 0.2
     # value_weight: 0.2
+  body:
+    enabled: true
+    speed: 400             # Crawl speed toward the next meal (pixels/second, frame-rate independent)
+    hunger:                # Worms eat faster when the compost is fuller
+      full_at_chunks: 2000        # Available chunk count at which the multiplier peaks
+      max_speed_multiplier: 4.0   # Speed multiplier at (or above) full_at_chunks; 1.0 when empty
+      curve: 3                    # Exponent: 1=linear, higher=stays slow longer, ramps sharply near full
+    segments: 22           # Number of trail dots making up the worm
+    segment_spacing: 10    # Distance (pixels) travelled between trail dots (< 2*radius → overlapping, solid body)
+    radius: 10             # Head dot radius
+    bulge: 1.3             # Mid-body swell multiplier on radius (1.0 = no bulge)
+    opacity: 0.5           # Whole-body translucency (1.0 = solid; lower lets the compost show through)
+    tail_fade: 0.15        # Alpha at the tail tip relative to the head (1.0 = uniform, no fade)
+    soft_edge: 2           # Edge softening: downscale factor for a cheap blur (1 = crisp)
+    glow_radius: 14        # Wild/stretch picks: whole body wears that meal and glows red/yellow this far out
+    glow_alpha_max: 120    # Peak alpha of that glow
+    mouth_size: 0.7        # Crescent mouth (color of the last meal) radius, as a fraction of head radius
+    eye_size: 0.18         # Two eyes, same color as the mouth, radius as a fraction of head radius
+    arrive_distance: 20    # Distance at which the worm bites the chunk
+    # Body colors: the available meals whose cone distance from the last meal fits
+    # [appetite_min, appetite_max], picked by farthest-point sampling in cone space so
+    # they spread as widely as possible over the admitted region; head = most likely eaten
   consumption_particles:
     enabled: true
     min_count: 1         # Particles for smallest chunks

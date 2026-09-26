@@ -72,6 +72,12 @@ class WormManager:
         glue_cfg = config["worm"].get("glue", {})
         self._max_active_glues: int = int(glue_cfg.get("max_active_glues", 5))
 
+        # Hunger: worms crawl faster as the compost fills up
+        hunger_cfg = config["worm"].get("body", {}).get("hunger", {})
+        self._hunger_full_at: int = int(hunger_cfg.get("full_at_chunks", 2000))
+        self._hunger_max_multiplier: float = float(hunger_cfg.get("max_speed_multiplier", 4.0))
+        self._hunger_curve: float = float(hunger_cfg.get("curve", 3.0))
+
     def schedule_worms(self, count: int, available_chunks: int = 0) -> None:
         """
         Schedule spawning of 'count' worms sequentially.
@@ -309,18 +315,27 @@ class WormManager:
             screen: Pygame screen for rendering
             torus_world: Whether torus wrapping is enabled
         """
-        # Update worm (feeding)
+        # Update worm (crawling, then feeding on arrival)
+        available_ids = {id(c) for c in available_chunks}
         worm = self.current_worm
         if worm and not worm.is_dead:
-            next_chunk = worm.select_next_chunk(available_chunks)
-            if next_chunk:
+            # Hunger: speed multiplier ramps 1 -> max as available chunks approach full_at_chunks,
+            # curved so it stays low while the compost is sparse and climbs sharply near full
+            fullness = min(1.0, len(available_chunks) / max(1, self._hunger_full_at))
+            worm.speed_multiplier = 1.0 + (self._hunger_max_multiplier - 1.0) * (fullness ** self._hunger_curve)
+            # (Re)select a target if none, or if the current one left the table
+            if worm.target is None or id(worm.target) not in available_ids:
+                worm.target = worm.select_next_chunk(available_chunks)
+            if worm.target and (not worm.body_enabled or worm.step_toward_target(torus_world)):
+                next_chunk = worm.target
                 self._spawn_particles(next_chunk)
                 remove_chunk(next_chunk)
                 available_chunks.remove(next_chunk)
+                available_ids.discard(id(next_chunk))
                 worm.consume_chunk(next_chunk)
+            worm.draw_body(screen)
 
         # Update all glues
-        available_ids = {id(c) for c in available_chunks}
         for glue in glues_list:
             glue.try_attract_chunks(available_chunks, available_ids)
             glue.update(torus_world)

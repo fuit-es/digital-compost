@@ -4,7 +4,7 @@ import math
 from typing import List, Tuple, Dict, Any, Optional, Set, Deque
 from collections import deque
 import numpy as np
-from utils.color_utils import calculate_color_contrast, hsv_to_rgb_int
+from utils.color_utils import calculate_color_contrast, calculate_color_contrast_many, hsv_to_rgb_int
 from utils.logging_utils import get_logger
 from utils.math_utils import compute_flocking_forces
 from entities.chunk import Chunk, GluedChunk
@@ -374,6 +374,37 @@ class Worm:
         # Glue configuration
         self.glue_enabled = worm_cfg.get("glue", {}).get("enabled", False)
 
+        # Body: a crawling position with a short trail, colored by tolerance
+        body_cfg = worm_cfg.get("body", {})
+        self.body_enabled = body_cfg.get("enabled", True)
+        self.speed = float(body_cfg.get("speed", 400.0))  # pixels per second (frame-rate independent)
+        self.speed_multiplier = 1.0                        # Set by WormManager from compost fullness
+        self._last_step_ms: Optional[int] = None
+        self.segment_spacing = float(body_cfg.get("segment_spacing", 5))
+        self.body_radius = int(body_cfg.get("radius", 3))
+        self.arrive_distance = float(body_cfg.get("arrive_distance", 8))
+        self.bulge = float(body_cfg.get("bulge", 1.5))
+        self.glow_radius = int(body_cfg.get("glow_radius", 14))
+        self.glow_alpha_max = int(body_cfg.get("glow_alpha_max", 120))
+        self.glow_tint: Optional[Tuple[int, int, int]] = None  # Set on wild/stretch picks
+        self.mouth_size = float(body_cfg.get("mouth_size", 0.55))  # Crescent radius as fraction of head radius
+        self.eye_size = float(body_cfg.get("eye_size", 0.18))      # Eye radius as fraction of head radius
+        # Subtlety: the body is composited as one translucent layer that fades toward the tail
+        self.opacity = min(1.0, max(0.0, float(body_cfg.get("opacity", 1.0))))      # Whole-body alpha
+        self.tail_fade = min(1.0, max(0.0, float(body_cfg.get("tail_fade", 1.0))))  # Tail alpha relative to head
+        self.soft_edge = max(1, int(body_cfg.get("soft_edge", 1)))                  # Downscale factor for a cheap blur
+        self._heading: Optional[Tuple[float, float]] = None       # Unit direction of travel
+        self._glow_cache: Dict[Tuple, pygame.Surface] = {}
+        self.segments = int(body_cfg.get("segments", 7))
+        # One color per body dot, head first; set on every meal pick (first pick = that meal's color)
+        self.body_colors: List[Tuple[int, int, int]] = [(0, 0, 0)] * (self.segments + 1)
+        self.position: Optional[Tuple[float, float]] = None
+        self.target: Optional[Chunk] = None
+        self.trail: Deque[Tuple[float, float]] = deque(maxlen=self.segments)
+        win_cfg = config["simulation"]["window"]
+        self._win_width = win_cfg["width"]
+        self._win_height = win_cfg["height"]
+
     @property
     def jitter_chance(self) -> float:
         spread = self.appetite_max - self.appetite_min
@@ -406,10 +437,184 @@ class Worm:
         self._next_is_stretch = False
         self._next_contrast_pct = None
         self.history.append(history_entry)
+        self.target = None
 
         # Stretch meal is the last meal — die immediately after eating it
         if is_stretch or len(self.history) >= self.max_meals:
             self.mark_as_dead()
+
+    def _color_body_from_meals(self, chunks: List[Chunk], valid_idx: np.ndarray, diffs: np.ndarray) -> None:
+        """
+        Color the body with the available meals that fit the appetite band.
+
+        The admitted chunks are placed in cone space (x=V*S*cos(H), y=V*S*sin(H), z=V)
+        and picked by farthest-point sampling so the chosen meals are spread as
+        widely as possible over the admitted region. Picks are ordered head→tail
+        by decreasing likelihood of being eaten (selection weight = contrast).
+        """
+        n = self.segments + 1  # head + trail dots
+        hsv = np.array([chunks[i].cached_hsv_color for i in valid_idx], dtype=np.float64).reshape(-1, 3)
+        h_rad = hsv[:, 0] * np.pi / 180
+        vs = hsv[:, 2] * hsv[:, 1]
+        pts = np.column_stack([vs * np.cos(h_rad), vs * np.sin(h_rad), hsv[:, 2]])
+
+        # Farthest-point sampling, seeded at a random admitted meal
+        chosen = [random.randrange(len(pts))]
+        min_dist = np.linalg.norm(pts - pts[chosen[0]], axis=1)
+        while len(chosen) < min(n, len(pts)):
+            nxt = int(np.argmax(min_dist))
+            chosen.append(nxt)
+            min_dist = np.minimum(min_dist, np.linalg.norm(pts - pts[nxt], axis=1))
+
+        # Head = most likely to be eaten (selection weight is the contrast itself), tail = least
+        chosen.sort(key=lambda i: diffs[valid_idx[i]], reverse=True)
+        colors = [hsv_to_rgb_int(chunks[valid_idx[i]].cached_hsv_color) for i in chosen]
+        # Cycle if fewer admitted meals than body dots
+        self.body_colors = [colors[i % len(colors)] for i in range(n)]
+
+    def _mark_offband_pick(self, chunk: Chunk, tint: Tuple[int, int, int]) -> None:
+        """Off-band pick (wild/stretch): the whole body wears the chosen meal and glows in the marker tint."""
+        self.body_colors = [hsv_to_rgb_int(chunk.cached_hsv_color)] * (self.segments + 1)
+        self.glow_tint = tint
+
+    def _get_cached_glow(self, radius: int) -> pygame.Surface:
+        """Get or create a soft radial glow surface for the current tint (same approach as Glue)."""
+        key = (radius, self.glow_tint)
+        if key not in self._glow_cache:
+            outer = radius + self.glow_radius
+            glow = pygame.Surface((outer * 2, outer * 2), pygame.SRCALPHA)
+            for r in range(outer, radius, -1):
+                alpha = int(self.glow_alpha_max * (outer - r) / max(1, self.glow_radius))
+                pygame.draw.circle(glow, self.glow_tint + (alpha,), (outer, outer), r)
+            self._glow_cache[key] = glow
+        return self._glow_cache[key]
+
+    def step_toward_target(self, torus_world: bool = False) -> bool:
+        """
+        Crawl one frame toward the target chunk.
+
+        Returns:
+            True when the worm has arrived and may bite the chunk.
+        """
+        if self.target is None:
+            return False
+        tx, ty = self.target.body.position.x, self.target.body.position.y
+        if self.position is None:
+            # Hatch somewhere in the window and crawl from there
+            self.position = (random.uniform(0, self._win_width), random.uniform(0, self._win_height))
+        x, y = self.position
+        dx, dy = tx - x, ty - y
+        if torus_world:
+            if abs(dx) > self._win_width / 2:
+                dx -= math.copysign(self._win_width, dx)
+            if abs(dy) > self._win_height / 2:
+                dy -= math.copysign(self._win_height, dy)
+        dist = math.hypot(dx, dy)
+        if dist > 0:
+            self._heading = (dx / dist, dy / dist)
+        if dist <= self.arrive_distance:
+            return True
+        # Time-based step so the crawl pace doesn't collapse when the frame rate drops
+        now_ms = pygame.time.get_ticks()
+        dt = 0.0 if self._last_step_ms is None else min(0.25, (now_ms - self._last_step_ms) / 1000.0)
+        self._last_step_ms = now_ms
+        step = min(self.speed * self.speed_multiplier * dt, dist)
+        x += dx / dist * step
+        y += dy / dist * step
+        if torus_world:
+            x %= self._win_width
+            y %= self._win_height
+        self.position = (x, y)
+        # Lay a trail dot once we've travelled segment_spacing from the last one
+        if not self.trail or math.hypot(x - self.trail[-1][0], y - self.trail[-1][1]) >= self.segment_spacing:
+            self.trail.append(self.position)
+        return False
+
+    def draw_body(self, surface: pygame.Surface) -> None:
+        """Draw the worm as a thick bulbous string of overlapping dots, colored by its cone samples."""
+        if not self.body_enabled or self.is_dead or self.position is None:
+            return
+        n = len(self.trail)
+        head = (int(self.position[0]), int(self.position[1]))
+        # trail[0] is the oldest dot (tail); colormap index 0 is the head.
+        # Radius swells mid-body (sin profile × bulge) and tapers at both ends.
+        # Each dot carries its own alpha: tail_fade at the tail tip, ramping to opaque at the head.
+        dots = []
+        for i, (x, y) in enumerate(self.trail):
+            t = (i + 1) / (n + 1)  # 0 at tail → 1 at head
+            swell = 1.0 + (self.bulge - 1.0) * math.sin(t * math.pi)
+            r = max(2, int(self.body_radius * (0.4 + 0.6 * t) * swell))
+            alpha = int(255 * (self.tail_fade + (1.0 - self.tail_fade) * t))
+            dots.append(((int(x), int(y)), r, self.body_colors[n - i], alpha))
+        dots.append((head, self.body_radius, self.body_colors[0], 255))
+
+        # Draw onto a local alpha layer covering the body (plus room for glow and mouth), then
+        # composite it once: overlapping dots never stack, so the whole worm stays evenly translucent.
+        pad = self.glow_radius + int(self.body_radius * self.bulge) + 2
+        xs = [c[0] for c, _, _, _ in dots]
+        ys = [c[1] for c, _, _, _ in dots]
+        left, top = min(xs) - pad, min(ys) - pad
+        w, h = max(xs) - left + pad, max(ys) - top + pad
+        layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        local = [((cx - left, cy - top), r, color, alpha) for (cx, cy), r, color, alpha in dots]
+
+        # Off-band pick: soft glow halo under the whole body
+        if self.glow_tint is not None:
+            for center, r, _, _ in local:
+                glow = self._get_cached_glow(r)
+                layer.blit(glow, glow.get_rect(center=center))
+        # pygame.draw writes pixels rather than blending, so tail→head order lets the
+        # more opaque head-side dots overwrite the faded ones where they overlap.
+        for center, r, color, alpha in local:
+            pygame.draw.circle(layer, color + (alpha,), center, r)
+        # Mouth: a crescent at the tip of the head, horns opening forward (earwig pincers),
+        # in the color of the last meal (the color every candidate is contrasted against)
+        # (before the first meal there is nothing to contrast against: mouth takes the worm's own color)
+        if self._heading is not None:
+            mouth_rgb = hsv_to_rgb_int(self.last_color) if self.last_color is not None else self.body_colors[0]
+            self._draw_mouth(layer, (head[0] - left, head[1] - top), mouth_rgb)
+
+        # Soft edges: bounce through a lower resolution (cheap blur, no pygame-ce needed)
+        if self.soft_edge > 1:
+            small = pygame.transform.smoothscale(layer, (max(1, w // self.soft_edge), max(1, h // self.soft_edge)))
+            layer = pygame.transform.smoothscale(small, (w, h))
+        if self.opacity < 1.0:
+            layer.set_alpha(int(255 * self.opacity))
+        surface.blit(layer, (left, top))
+
+    def _draw_mouth(self, surface: pygame.Surface, head: Tuple[int, int], color: Tuple[int, int, int]) -> None:
+        """Crescent polygon = disc minus a forward-shifted disc, placed at the tip of the head."""
+        hx, hy = self._heading
+        R = self.body_radius
+        r1 = max(2.0, R * self.mouth_size)   # outer disc
+        r2 = r1 * 0.95                       # cutting disc
+        d = r1 * 0.45                        # forward shift of the cutting disc (smaller = thinner crescent)
+        # Intersection angle on the outer disc (local frame: +x = forward)
+        cos_a = max(-1.0, min(1.0, (r1 * r1 + d * d - r2 * r2) / (2 * r1 * d)))
+        a = math.acos(cos_a)
+        # Same intersection point seen from the cutting disc
+        ix, iy = r1 * math.cos(a), r1 * math.sin(a)
+        b = math.atan2(iy, ix - d)
+        steps = max(8, int(r1))
+        pts = []
+        # Outer arc from +a around the back to -a
+        for i in range(steps + 1):
+            t = a + (2 * math.pi - 2 * a) * i / steps
+            pts.append((r1 * math.cos(t), r1 * math.sin(t)))
+        # Inner arc (cutting disc) from -b back to +b across its rear side (through pi)
+        for i in range(steps + 1):
+            t = (2 * math.pi - b) - (2 * math.pi - 2 * b) * i / steps
+            pts.append((d + r2 * math.cos(t), r2 * math.sin(t)))
+        # Rotate into heading frame and place at the tip
+        cx, cy = head[0] + hx * R * 1.35, head[1] + hy * R * 1.35
+        poly = [(int(cx + px * hx - py * hy), int(cy + px * hy + py * hx)) for px, py in pts]
+        pygame.draw.polygon(surface, color, poly)
+        # Two little eyes behind the mouth, either side of the heading
+        eye_r = max(1, int(R * self.eye_size))
+        ex, ey = head[0] + hx * R * 0.05, head[1] + hy * R * 0.05
+        off = R * 0.38
+        for side in (-1, 1):
+            pygame.draw.circle(surface, color, (int(ex - hy * off * side), int(ey + hx * off * side)), eye_r)
 
     def mark_as_dead(self) -> None:
         """Mark the worm as dead and create glue at the last meal site if enabled."""
@@ -543,6 +748,11 @@ class Worm:
         if self.is_dead:
             return None
 
+        # Fresh pick — clear markers from any abandoned target
+        self._next_is_wild = False
+        self._next_is_stretch = False
+        self._next_contrast_pct = None
+
         # Die immediately if already at capacity
         if len(self.history) >= self.max_meals:
             self.mark_as_dead()
@@ -553,40 +763,45 @@ class Worm:
             self.mark_as_dead()
             return None
 
-        # First chunk: select randomly
+        # First chunk: select randomly — body wears that first meal
         if self.last_color is None:
-            return random.choice(chunks)
+            first = random.choice(chunks)
+            self.body_colors = [hsv_to_rgb_int(first.cached_hsv_color)] * (self.segments + 1)
+            return first
+
+        # One vectorized contrast pass against every chunk, reused by all paths below
+        diffs = calculate_color_contrast_many(
+            self.last_color, [c.cached_hsv_color for c in chunks], self.config
+        )
+
+        # Wear the admitted meals: body colored by available chunks fitting the band
+        valid_idx = np.nonzero((diffs >= self.appetite_min) & (diffs <= self.appetite_max))[0]
+        self.glow_tint = None
+        if len(valid_idx):
+            self._color_body_from_meals(chunks, valid_idx, diffs)
 
         # Jitter: chance scales as appetite band narrows (spread 1.0->wide, 0.0->narrow)
         if random.random() < self.jitter_chance:
-            best_chunk = max(
-                chunks,
-                key=lambda c: calculate_color_contrast(self.last_color, c.cached_hsv_color, self.config)
-            )
-            best_diff = calculate_color_contrast(self.last_color, best_chunk.cached_hsv_color, self.config)
+            best_idx = int(np.argmax(diffs))
+            best_diff = float(diffs[best_idx])
             self._next_is_wild = True
             self._next_contrast_pct = best_diff
+            self._mark_offband_pick(chunks[best_idx], (255, 60, 60))
             _logger.debug("Worm jitter! eating furthest chunk, contrast=%.4f", best_diff)
-            return best_chunk
+            return chunks[best_idx]
 
         # Find valid chunks within appetite range, weighted by contrast
-        valid_chunks = []
-        weights = []
-        for chunk in chunks:
-            diff = calculate_color_contrast(self.last_color, chunk.cached_hsv_color, self.config)
-            if self.appetite_min <= diff <= self.appetite_max:
-                valid_chunks.append(chunk)
-                weights.append(diff)
-        if valid_chunks:
+        if len(valid_idx):
+            weights = diffs[valid_idx]
             try:
-                return random.choices(valid_chunks, weights=weights, k=1)[0]
+                return chunks[random.choices(valid_idx.tolist(), weights=weights.tolist(), k=1)[0]]
             except ValueError:
-                return random.choice(valid_chunks)
+                return chunks[random.choice(valid_idx.tolist())]
 
         # No valid chunks — stretch (eat one last out-of-range meal, then die)
-        return self._stretch_and_pick(chunks)
+        return self._stretch_and_pick(chunks, diffs)
 
-    def _stretch_and_pick(self, chunks: List[Chunk]) -> Optional[Chunk]:
+    def _stretch_and_pick(self, chunks: List[Chunk], diffs: np.ndarray) -> Optional[Chunk]:
         """
         Pick the nearest out-of-range chunk as a last meal (worm dies after eating it).
 
@@ -594,27 +809,18 @@ class Worm:
         current [appetite_min, appetite_max] range boundary.
         Does not modify appetite — the worm dies after this meal.
         """
-        best_chunk = None
-        best_gap = float("inf")
-        best_diff = 0.0
-
-        for chunk in chunks:
-            diff = calculate_color_contrast(self.last_color, chunk.cached_hsv_color, self.config)
-            if diff < self.appetite_min:
-                gap = self.appetite_min - diff
-            else:
-                gap = diff - self.appetite_max
-            if gap < best_gap:
-                best_gap = gap
-                best_chunk = chunk
-                best_diff = diff
-
-        if best_chunk is None:
+        if len(chunks) == 0:
             self.mark_as_dead()
             return None
 
+        gaps = np.where(diffs < self.appetite_min, self.appetite_min - diffs, diffs - self.appetite_max)
+        best_idx = int(np.argmin(gaps))
+        best_chunk = chunks[best_idx]
+        best_diff = float(diffs[best_idx])
+
         self._next_is_stretch = True
         self._next_contrast_pct = best_diff
+        self._mark_offband_pick(best_chunk, (255, 200, 40))
         _logger.debug(
             "Worm stretch pick: contrast=%.4f, range=[%.4f, %.4f] (meal %d)",
             best_diff, self.appetite_min, self.appetite_max, len(self.history) + 1,
