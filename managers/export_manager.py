@@ -81,7 +81,8 @@ class ExportManager:
             for glued in glued_chunks:
                 chunk = glued.chunk
                 angle_degrees = math.degrees(-chunk.body.angle)
-                rotated_surface = pygame.transform.rotate(chunk.segment_surface, angle_degrees)
+                # rotozoom filters (smooth edges, like the browser); rotate would be nearest-neighbour
+                rotated_surface = pygame.transform.rotozoom(chunk.segment_surface, angle_degrees, 1.0)
                 pos = chunk.body.position
                 rect = rotated_surface.get_rect(center=(int(pos.x), int(pos.y)))
                 rotated_surfaces.append((rotated_surface, rect))

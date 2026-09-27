@@ -1,14 +1,26 @@
-"""Entry point for the Compost simulation."""
+"""Entry point for the Compost simulation.
+
+Physics, worms and audio run here; the picture is drawn in the browser
+(web/, served at http://<host>:<port>/). pygame runs headless.
+"""
+import os
+import webbrowser
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")  # No pygame window, no Dock icon
+
 import pygame
 import pymunk
 import yaml
 
 from simulation import Simulation
-from network import UploadServer
+from network import UploadServer, ViewerHub
 from utils.system_utils import quit_program
 from utils.logging_utils import get_logger
 
 _logger = get_logger(__name__)
+
+# World size used with "auto" until the first browser reports its viewport
+_AUTO_DEFAULT_SIZE = (1280, 800)
 
 
 def load_config(config_file: str = "config.yaml") -> dict:
@@ -35,29 +47,13 @@ def main() -> None:
     pygame.init()
     pygame.mixer.quit()
 
-    # Resolve window size: "auto" uses usable desktop area (minus menu bar, dock, etc.)
+    # Resolve world size: "auto" follows the browser viewport, fixed sizes are letterboxed
     win_cfg = config["simulation"]["window"]
-    if win_cfg.get("width") == "auto" or win_cfg.get("height") == "auto":
-        import ctypes, ctypes.util
-        sdl_path = ctypes.util.find_library("SDL2")
-        usable_w, usable_h = None, None
-        if sdl_path:
-            sdl = ctypes.CDLL(sdl_path)
-            rect = (ctypes.c_int * 4)()  # x, y, w, h
-            if sdl.SDL_GetDisplayUsableBounds(0, rect) == 0:
-                usable_w, usable_h = rect[2], rect[3]
-                _logger.info("SDL usable bounds: %dx%d", usable_w, usable_h)
-        if usable_w is None:
-            # Fallback: full desktop resolution
-            usable_w, usable_h = pygame.display.get_desktop_sizes()[0]
-            _logger.info("Fallback to full desktop: %dx%d", usable_w, usable_h)
-        if win_cfg.get("width") == "auto":
-            win_cfg["width"] = usable_w
-        if win_cfg.get("height") == "auto":
-            win_cfg["height"] = usable_h
-    screen = pygame.display.set_mode((win_cfg["width"], win_cfg["height"]))
-    pygame.display.set_caption("Fuit.es Digital Compost")
-    font = pygame.font.SysFont(None, 24)
+    follow_viewer = win_cfg.get("width") == "auto" or win_cfg.get("height") == "auto"
+    if win_cfg.get("width") == "auto":
+        win_cfg["width"] = _AUTO_DEFAULT_SIZE[0]
+    if win_cfg.get("height") == "auto":
+        win_cfg["height"] = _AUTO_DEFAULT_SIZE[1]
 
     # Initialize Pymunk space
     space = pymunk.Space()
@@ -67,7 +63,8 @@ def main() -> None:
     )
 
     # Pass the entire config to the Simulation class
-    simulation = Simulation(config, space, screen, font)
+    simulation = Simulation(config, space)
+    viewer_hub = ViewerHub(config)
 
     # Start background HTTP server for uploads
     server_cfg = config.get("server", {})
@@ -78,77 +75,55 @@ def main() -> None:
         host=host,
         port=port,
         config=config,
-        on_upload_callback=simulation.on_upload_received
+        on_upload_callback=simulation.on_upload_received,
+        on_audio_callback=simulation.submit_audio,
+        viewer_hub=viewer_hub,
     )
     upload_server.start()
+
+    viewer_url = f"http://{host}:{port}/"
+    _logger.info("Viewer: %s", viewer_url)
+    if server_cfg.get("open_browser", True):
+        webbrowser.open(viewer_url)
 
     clock = pygame.time.Clock()
     running = True
     dt = 1.0 / config["simulation"]["fps"]
+    fps = 0.0
 
     while running:
         # Check if simulation requested quit
         if simulation.should_quit:
             running = False
 
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                simulation.handle_button_click(pygame.mouse.get_pos())
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_d:
-                    simulation.dark_mode = not simulation.dark_mode
-                elif event.key == pygame.K_t:
-                    # Toggle torus world
-                    simulation.toggle_torus_world()
-                elif event.key == pygame.K_h:
-                    # Toggle history panel
-                    simulation.toggle_history_panel()
-                elif event.key == pygame.K_g:
-                    simulation.glue_visuals_enabled = not simulation.glue_visuals_enabled
-                elif event.key == pygame.K_u:
-                    simulation.upload_file()
-                elif event.key == pygame.K_i:
-                    simulation._toggle_audio_in_recording()
-                elif event.key == pygame.K_o:
-                    simulation._toggle_compost_recording()
-                elif event.key == pygame.K_c:
-                    simulation.clear_chunks()
-                elif event.key == pygame.K_q:
-                    running = False
-                elif event.key == pygame.K_ESCAPE:
-                    simulation.ui_enabled = not simulation.ui_enabled
-                elif event.key == pygame.K_e:
-                    # Export glues shortcut
-                    simulation.export_glues()
-                elif event.key == pygame.K_k:
-                    simulation.debug_mode = not simulation.debug_mode
-                elif event.key == pygame.K_p:
-                    simulation.processing_indicator_enabled = not simulation.processing_indicator_enabled
+        # Keyboard shortcuts and pill bar buttons from the browser
+        for key in viewer_hub.drain_commands():
+            simulation.handle_key(key)
 
-        # Fill screen with background color
-        bg = config["colors"]["BLACK"] if simulation.dark_mode else config["colors"]["WHITE"]
-        screen.fill(bg)
-        simulation.draw_ui()
+        if follow_viewer and viewer_hub.requested_size:
+            simulation.resize(*viewer_hub.requested_size)
 
         # Process any pending uploads (main-thread safe)
         simulation.process_pending_uploads()
-
-        # Process completed file dialog results (non-blocking)
-        simulation.process_file_dialogs()
 
         # Receive processed chunks from background (non-blocking)
         simulation.receive_chunks()
 
         # Handle audio hover for sound chunks
-        simulation.handle_audio_hover(pygame.mouse.get_pos())
+        simulation.handle_audio_hover(viewer_hub.mouse_pos)
 
         space.step(dt)
         simulation.update_chunks()
-        pygame.display.flip()
+        viewer_hub.publish(simulation, fps)
         clock.tick(config["simulation"]["fps"])
-        pygame.display.set_caption(f"Compost — {clock.get_fps():.0f} FPS")
+        fps = clock.get_fps()
+        upload_server.stats["fps"] = round(fps, 1)
+        upload_server.stats["chunks"] = len(simulation.chunks)
+        glues = simulation.glues
+        upload_server.stats["glues"] = len(glues)
+        upload_server.stats["avg_flocked"] = round(
+            sum(len(g.glued_chunks) for g in glues) / len(glues), 1
+        ) if glues else 0
 
     # Clean up worker process before exiting
     simulation.cleanup()

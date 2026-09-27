@@ -221,15 +221,18 @@ class AudioManager:
         if path:
             self.sound_cache.pop(path, None)
 
-    def handle_audio_hover(self, mouse_pos: Tuple[int, int], chunks: List) -> None:
-        """Handle proximity-based audio playback for chunks near the cursor."""
+    def handle_audio_hover(self, mouse_pos: Optional[Tuple[float, float]], chunks: List) -> None:
+        """Handle proximity-based audio playback for chunks near the cursor (None = no cursor)."""
         vol_cfg = self.config["sound"]["hover"]["volume_scaling"]
         max_distance = vol_cfg["max_distance"]
         reference = vol_cfg["reference_distance"]
         threshold = vol_cfg["min_volume_threshold"]
 
-        cursor_x, cursor_y = mouse_pos
         should_play: set = set()
+        if mouse_pos is None:
+            chunks = ()
+        else:
+            cursor_x, cursor_y = mouse_pos
 
         for chunk in chunks:
             if not chunk.audio_path:
@@ -274,6 +277,11 @@ class AudioManager:
         with self._lock:
             state = self.active_chunks.get(chunk)
         return state.current_volume if state else 0.0
+
+    def volumes(self) -> Dict[Any, float]:
+        """Snapshot of current volumes for all playing chunks."""
+        with self._lock:
+            return {chunk: state.current_volume for chunk, state in self.active_chunks.items()}
 
     def cleanup(self) -> None:
         """Stop the output stream and release resources."""

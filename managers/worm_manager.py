@@ -1,6 +1,4 @@
 """Worm lifecycle and scheduling management."""
-import math
-import random
 import pygame
 from typing import Callable, Dict, Any, List, Optional, Tuple
 from entities import Worm, Glue, Chunk
@@ -8,23 +6,6 @@ from utils.color_utils import compute_consecutive_extremes, hsv_to_rgb_int
 from utils.logging_utils import get_logger
 
 _logger = get_logger(__name__)
-
-
-class _Particle:
-    """A single fading particle for consumption burst effects."""
-    __slots__ = ('x', 'y', 'vx', 'vy', 'color', 'alpha', 'radius', 'life', 'max_life')
-
-    def __init__(self, x: float, y: float, vx: float, vy: float,
-                 color: Tuple[int, int, int], radius: int, life: int):
-        self.x = x
-        self.y = y
-        self.vx = vx
-        self.vy = vy
-        self.color = color
-        self.alpha = 255
-        self.radius = radius
-        self.life = life
-        self.max_life = life
 
 
 class WormManager:
@@ -50,19 +31,9 @@ class WormManager:
         self.inherited_appetite_min: float = appetite_cfg.get("initial_min", 0.0)
         self.inherited_appetite_max: float = appetite_cfg.get("initial_max", 1.0)
 
-        # Consumption particle effects
-        self._particles: List[_Particle] = []
-        self._dot_cache: Dict[Tuple, pygame.Surface] = {}  # (radius, color, alpha) -> surface
-        p_cfg = config["worm"].get("consumption_particles", {})
-        self._particles_enabled: bool = p_cfg.get("enabled", True)
-        self._particle_min_count: int = p_cfg.get("min_count", 5)
-        self._particle_max_count: int = p_cfg.get("max_count", 50)
-        self._particle_max_size: float = float(p_cfg.get("max_size", 200))
-        self._particle_speed: float = p_cfg.get("speed", 1.0)
-        self._particle_lifetime: int = p_cfg.get("lifetime_frames", 150)
-        self._particle_radius: int = p_cfg.get("radius", 1)
-        self._particle_radius_jitter: int = p_cfg.get("radius_jitter", 1)
-        self._particle_drag: float = p_cfg.get("drag", 0.97)
+        # Consumption bursts, animated as particles by the viewer
+        self._particles_enabled: bool = config["worm"].get("consumption_particles", {}).get("enabled", True)
+        self._bursts: List[Dict[str, Any]] = []
 
         # Cache superabundance config
         sa_cfg = config["worm"].get("superabundance", {})
@@ -210,8 +181,7 @@ class WormManager:
         self._spawn_pending = 0
         self._spawn_batch_total = 0
         self._available_at_spawn = 0
-        self._particles.clear()
-        self._dot_cache.clear()
+        self._bursts.clear()
         appetite_cfg = self.config["worm"]["appetite"]
         self.inherited_appetite_min = appetite_cfg.get("initial_min", 0.0)
         self.inherited_appetite_max = appetite_cfg.get("initial_max", 1.0)
@@ -219,83 +189,28 @@ class WormManager:
     # ----------------------------------------------------------------
     # Consumption particle effects
     # ----------------------------------------------------------------
-    def _spawn_particles(self, chunk: Chunk) -> None:
-        """Scatter particles across the chunk's surface area with gentle random drift."""
+    def _emit_burst(self, chunk: Chunk) -> None:
+        """Record a consumption burst over the chunk's area for the viewer to animate."""
         if not self._particles_enabled:
             return
         pos = chunk.body.position
-        rgb = hsv_to_rgb_int(chunk.cached_hsv_color)
-        surf = chunk.segment_surface
-        # Account for in-progress shrink animation
-        if chunk._shrink_start_ms is not None:
-            elapsed = pygame.time.get_ticks() - chunk._shrink_start_ms
-            shrink_t = min(1.0, elapsed / chunk._shrink_duration_ms) if chunk._shrink_duration_ms > 0 else 1.0
-            scale = 1.0 + (chunk._shrink_target_scale - 1.0) * shrink_t
-        else:
-            scale = 1.0
-        chunk_extent = max(surf.get_width(), surf.get_height()) * scale
-        spread = chunk_extent * 0.5
-        # Lerp count between min and max based on chunk size
-        size_ratio = min(1.0, chunk_extent / self._particle_max_size)
-        count = int(self._particle_min_count + (self._particle_max_count - self._particle_min_count) * size_ratio)
-        for _ in range(count):
-            a = random.uniform(0, 2 * math.pi)
-            r = spread * math.sqrt(random.random())
-            sx = pos.x + math.cos(a) * r
-            sy = pos.y + math.sin(a) * r
-            angle = random.uniform(0, 2 * math.pi)
-            speed = random.uniform(0, self._particle_speed)
-            life = random.randint(1, self._particle_lifetime)
-            radius = random.randint(
-                max(1, self._particle_radius - self._particle_radius_jitter),
-                self._particle_radius + self._particle_radius_jitter,
-            )
-            self._particles.append(_Particle(
-                sx, sy,
-                math.cos(angle) * speed, math.sin(angle) * speed,
-                rgb, radius, life,
-            ))
+        self._bursts.append({
+            "x": round(pos.x, 1),
+            "y": round(pos.y, 1),
+            "rgb": list(hsv_to_rgb_int(chunk.cached_hsv_color)),
+            "extent": round(chunk.extent, 1),
+        })
 
-    def update_and_draw_particles(self, screen: pygame.Surface) -> None:
-        """Step all particles forward one frame and draw survivors."""
-        if not self._particles:
-            return
-        alive: List[_Particle] = []
-        drag = self._particle_drag
-        cache = self._dot_cache
-        for p in self._particles:
-            p.life -= 1
-            if p.life <= 0:
-                continue
-            p.x += p.vx
-            p.y += p.vy
-            p.vx *= drag
-            p.vy *= drag
-            # Quantize alpha to 16 buckets for cache efficiency
-            alpha = max(0, int(255 * (p.life / p.max_life)))
-            alpha_bucket = (alpha >> 4) << 4
-            p.alpha = alpha
-            alive.append(p)
-            # Draw particle from cache
-            key = (p.radius, p.color, alpha_bucket)
-            dot = cache.get(key)
-            if dot is None:
-                d = p.radius * 2
-                dot = pygame.Surface((d, d), pygame.SRCALPHA)
-                pygame.draw.circle(dot, p.color + (alpha_bucket,), (p.radius, p.radius), p.radius)
-                cache[key] = dot
-            screen.blit(dot, (int(p.x) - p.radius, int(p.y) - p.radius))
-        self._particles = alive
-        if not alive:
-            self._dot_cache.clear()
+    def take_bursts(self) -> List[Dict[str, Any]]:
+        """Return and clear the bursts recorded since the last call."""
+        bursts, self._bursts = self._bursts, []
+        return bursts
 
     def update_worm_and_glues(
         self,
         glues_list: List[Glue],
         available_chunks: List[Chunk],
         remove_chunk: Callable[[Chunk], bool],
-        glue_visuals_enabled: bool,
-        screen: pygame.Surface,
         torus_world: bool = False
     ) -> None:
         """
@@ -305,8 +220,6 @@ class WormManager:
             glues_list: Reference to simulation's glues list
             available_chunks: Chunks available for worm/glues
             remove_chunk: Callback to remove a chunk from the simulation
-            glue_visuals_enabled: Whether to draw glue visuals
-            screen: Pygame screen for rendering
             torus_world: Whether torus wrapping is enabled
         """
         # Update worm (feeding)
@@ -314,7 +227,7 @@ class WormManager:
         if worm and not worm.is_dead:
             next_chunk = worm.select_next_chunk(available_chunks)
             if next_chunk:
-                self._spawn_particles(next_chunk)
+                self._emit_burst(next_chunk)
                 remove_chunk(next_chunk)
                 available_chunks.remove(next_chunk)
                 worm.consume_chunk(next_chunk)
@@ -324,8 +237,6 @@ class WormManager:
         for glue in glues_list:
             glue.try_attract_chunks(available_chunks, available_ids)
             glue.update(torus_world)
-            if glue_visuals_enabled:
-                glue.draw(screen)
 
     def _find_expired_glues(self, glues_list: List[Glue], min_age_ms: int) -> List[Glue]:
         """Find glues that are capped and have exceeded the minimum age."""

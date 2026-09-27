@@ -5,7 +5,7 @@ from typing import List, Tuple
 from scipy.spatial import ConvexHull
 
 
-def _transform_curve_to_pixels(
+def transform_curve_to_pixels(
     points_xy01: np.ndarray,
     width: int,
     height: int,
@@ -45,7 +45,11 @@ def _transform_curve_to_pixels(
     return px, py, drawing_center_x, drawing_center_y
 
 
-def build_curve_surface(points_xy01: np.ndarray, rgba: Tuple[float, float, float, float], width: int, height: int, line_width: int = 4, padding: int = 4) -> pygame.Surface:
+# Supersampling factor for antialiased curves
+_CURVE_SUPERSAMPLE = 3
+
+
+def build_curve_surface(points_xy01: np.ndarray, rgba: Tuple[float, float, float, float], width: int, height: int, line_width: int = 4, padding: int = 4, antialias: bool = False) -> pygame.Surface:
     """
     Build a transparent surface and draw a polyline representing the curve.
 
@@ -56,26 +60,38 @@ def build_curve_surface(points_xy01: np.ndarray, rgba: Tuple[float, float, float
         height (int): surface height.
         line_width (int): line thickness in pixels.
         padding (int): pixels padding inside the surface border.
+        antialias (bool): smooth edges and round joins (drawn supersampled, then scaled down).
 
     Returns:
         pygame.Surface: surface with the curve drawn.
     """
-    surf = pygame.Surface((width, height), pygame.SRCALPHA)
-    # if points_xy01 is None or len(points_xy01) < 2:
-    #     return surf
-
-    px, py, _, _ = _transform_curve_to_pixels(points_xy01, width, height, padding)
-
-    pts = [(int(x), int(y)) for x, y in zip(px, py)]
     r = max(0, min(255, int(rgba[0] * 255)))
     g = max(0, min(255, int(rgba[1] * 255)))
     b = max(0, min(255, int(rgba[2] * 255)))
     a = max(0, min(255, int(rgba[3] * 255)))
     color = (r, g, b, a)
+
+    k = _CURVE_SUPERSAMPLE if antialias else 1
+    surf = pygame.Surface((width * k, height * k), pygame.SRCALPHA)
+    # if points_xy01 is None or len(points_xy01) < 2:
+    #     return surf
+    if antialias:
+        # Transparent pixels share the line color so scaling down only fades alpha (no dark fringe)
+        surf.fill((r, g, b, 0))
+
+    px, py, _, _ = transform_curve_to_pixels(points_xy01, width * k, height * k, padding * k)
+
+    pts = [(int(x), int(y)) for x, y in zip(px, py)]
     try:
-        pygame.draw.lines(surf, color, False, pts, line_width)
+        pygame.draw.lines(surf, color, False, pts, line_width * k)
+        if antialias and line_width * k > 2:
+            # Round joins: thick pygame lines leave notches at the corners
+            for pt in pts:
+                pygame.draw.circle(surf, color, pt, (line_width * k) // 2)
     except Exception:
         pass
+    if antialias:
+        surf = pygame.transform.smoothscale(surf, (width, height))
     return surf
 
 
@@ -97,7 +113,7 @@ def convex_hull_vertices_from_curve(points_xy01: np.ndarray, width: int, height:
     # if points_xy01 is None or len(points_xy01) < 3:
     #     return [(-10, -10), (10, -10), (10, 10), (-10, 10)]
 
-    px, py, drawing_center_x, drawing_center_y = _transform_curve_to_pixels(points_xy01, width, height, padding)
+    px, py, drawing_center_x, drawing_center_y = transform_curve_to_pixels(points_xy01, width, height, padding)
 
     # Stack into Nx2 array for ConvexHull
     points_px = np.column_stack([px, py])

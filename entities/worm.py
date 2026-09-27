@@ -1,3 +1,4 @@
+import itertools
 import pygame
 import random
 import math
@@ -11,11 +12,15 @@ from entities.chunk import Chunk, GluedChunk
 
 _logger = get_logger(__name__)
 
+# Stable ids shared with the browser renderer
+_next_uid = itertools.count(1)
+
 
 class WormHistory:
     """Represents a single chunk's history entry for the worm."""
     def __init__(self, chunk_surface: pygame.Surface, hsv_color: Tuple[float, float, float],
                  wild: bool = False, stretch: bool = False, contrast_pct: Optional[float] = None):
+        self.uid = next(_next_uid)
         self.chunk_surface = chunk_surface
         self.hsv_color = hsv_color
         self.rgb_color = hsv_to_rgb_int(hsv_color)
@@ -27,6 +32,7 @@ class WormHistory:
 class Glue:
     """Manages a collection of chunks attracted by a single glue point."""
     def __init__(self, position: Tuple[float, float], worm_history: List[WormHistory], config: Dict[str, Any], source_worm: Optional['Worm'] = None):
+        self.uid = next(_next_uid)
         self.position = position
         self.worm_history = worm_history
         self.source_worm = source_worm
@@ -54,23 +60,12 @@ class Glue:
         self.separate_force_mult = flocking_cfg["separate_force_mult"]
         self.seek_force_mult = flocking_cfg["seek_force_mult"]
 
-        # Cached window dimensions for torus wrapping
-        win_cfg = config["simulation"]["window"]
-        self._win_width = win_cfg["width"]
-        self._win_height = win_cfg["height"]
+        # World dimensions for torus wrapping (updated in place when the viewer resizes)
+        self._win_cfg = config["simulation"]["window"]
 
-        # Glowing effect parameters from config
-        visual_cfg = self.glue_cfg.get("visual", {})
-        self.glow_radius = visual_cfg.get("glow_radius", 15)
-        self.pulse_speed = visual_cfg.get("pulse_speed", 0.05)
-        self.pulse_min = visual_cfg.get("pulse_min", 0.7)
-        self.pulse_max = visual_cfg.get("pulse_max", 1.0)
-        self.glow_alpha_max = visual_cfg.get("glow_alpha_max", 150)
-        self.full_ring_width = visual_cfg.get("full_ring_width", 2)
-        self.spin_speed = visual_cfg.get("spin_speed", 1.0)
-        self.min_quality_steps = visual_cfg.get("min_quality_steps", 6)
+        # Pulse clock for the glow (the viewer draws it from glue.visual config)
+        self.pulse_speed = self.glue_cfg.get("visual", {}).get("pulse_speed", 0.05)
         self.pulse_time = 0
-        self._glow_cache: Dict[int, pygame.Surface] = {}  # Cache glow surfaces by radius
         # Compute colors from worm history
         self._init_history_colors()
 
@@ -241,7 +236,7 @@ class Glue:
             velocities[i] = (v.x, v.y)
 
         # Compute all forces in one vectorized call
-        world_size = (self._win_width, self._win_height) if torus_world else None
+        world_size = (self._win_cfg["width"], self._win_cfg["height"]) if torus_world else None
         forces = compute_flocking_forces(
             positions, velocities, self.position,
             self.desired_separation, self.maxspeed, self.maxforce,
@@ -255,58 +250,9 @@ class Glue:
                 (forces[i, 0], forces[i, 1]), gc.chunk.body.position
             )
 
-    def _get_cached_glow(self, outer_radius: int) -> pygame.Surface:
-        """Get or create cached glow surface for given radius."""
-        if outer_radius not in self._glow_cache:
-            glow = pygame.Surface((outer_radius * 2, outer_radius * 2), pygame.SRCALPHA)
-            for r in range(outer_radius, 0, -1):
-                alpha = max(0, self.glow_alpha_max - (r * self.glow_alpha_max // outer_radius))
-                pygame.draw.circle(glow, self.glow_rgb + (alpha,), (outer_radius, outer_radius), r)
-            self._glow_cache[outer_radius] = glow
-        return self._glow_cache[outer_radius]
-
-    def draw(self, surface: pygame.Surface) -> None:
-        """Draw the glue as a glowing dot with mixed colors from worm history and a spinning color wheel."""
-        pulse_factor = self.pulse_min + (self.pulse_max - self.pulse_min) * math.sin(self.pulse_time)
-        outer_radius = int(self.glow_radius * 2 * pulse_factor)
-        if outer_radius <= 0:
-            return
-
-        # Get cached glow base and copy it
-        glow_surface = self._get_cached_glow(outer_radius).copy()
-
-        # Draw the center as a spinning color wheel made from meal colors
-        core_radius = int(self.glow_radius * pulse_factor)
-        if core_radius > 0 and self.meal_rgbs:
-            self._draw_color_wheel(glow_surface, (outer_radius, outer_radius), core_radius, angle_offset=self.pulse_time)
-            # If full, draw an outer white ring around the wheel
-            if len(self.glued_chunks) >= self.max_glued_chunks:
-                pygame.draw.circle(glow_surface, (255, 255, 255, 255), (outer_radius, outer_radius), max(1, core_radius + 2), self.full_ring_width)
-
-        # Draw onto main surface at the glue position
-        glow_rect = glow_surface.get_rect(center=(int(self.position[0]), int(self.position[1])))
-        surface.blit(glow_surface, glow_rect)
-
-    def _draw_color_wheel(self, surface: pygame.Surface, center: Tuple[int, int], radius: int, angle_offset: float = 0.0) -> None:
-        """Draw a simple pie-slice color wheel of meal colors, rotated by angle_offset (radians)."""
-        num_segments = len(self.meal_rgbs)
-        if num_segments <= 0:
-            return
-        # Convert offset to radians for rotation
-        start_angle = angle_offset * self.spin_speed
-        segment_angle = 2 * math.pi / num_segments
-        steps_per_segment = max(self.min_quality_steps, int(radius / 2))
-        cx, cy = center
-        for idx, color in enumerate(self.meal_rgbs):
-            a0 = start_angle + idx * segment_angle
-            a1 = a0 + segment_angle
-            points = [(cx, cy)]
-            for s in range(steps_per_segment + 1):
-                t = a0 + (a1 - a0) * (s / steps_per_segment)
-                x = cx + int(math.cos(t) * radius)
-                y = cy + int(math.sin(t) * radius)
-                points.append((x, y))
-            pygame.draw.polygon(surface, color + (255,), points)
+    @property
+    def is_full(self) -> bool:
+        return len(self.glued_chunks) >= self.max_glued_chunks
 
 
 class Worm:
@@ -325,6 +271,7 @@ class Worm:
             appetite_max: Inherited maximum contrast (cone distance %).
             available_chunks: Number of available (non-glued) chunks at spawn time.
         """
+        self.uid = next(_next_uid)
         self.config = config
         worm_cfg = config["worm"]
         hard_max = worm_cfg["max_meals"]
@@ -336,24 +283,11 @@ class Worm:
         appetite_cfg = worm_cfg["appetite"]
         self.appetite_min = appetite_min
         self.appetite_max = appetite_max
-        # Panel configuration
+        # Panel configuration (layout and styling are done by the viewer)
         panel_cfg = config["simulation"]["ui"]["worm_history_panel"]
         self.panel_enabled = panel_cfg["enabled"]
-        display_area = panel_cfg["display_area"]
-        self.panel_x = display_area["x"]
-        self.panel_y = display_area["y"]
-        self.panel_width = display_area["width"]
-        self.panel_height = display_area["height"]
-
-        # History panel settings
-        self.chunk_preview_size = panel_cfg["chunk_preview_size"]
-        self.text_height = panel_cfg["text_height"]
-        self.spacing = panel_cfg["spacing"]
         self.show_hsv_text = panel_cfg.get("show_hsv_text", True)
         self.show_contrast_markers = panel_cfg.get("show_contrast_markers", True)
-
-        # Colors
-        self.panel_bg_color = tuple(config["colors"]["PANEL_BG"])
 
         # Jitter: chance scales as appetite band narrows
         self.jitter_wide = appetite_cfg.get("jitter_wide", 0.05)
@@ -424,24 +358,15 @@ class Worm:
             self.glue = Glue(position, self.history, self.config, source_worm=self)
             _logger.debug("Created glue at (%.1f, %.1f)", position[0], position[1])
 
-    def draw(self, surface: pygame.Surface, x_offset: int = 0) -> None:
+    def panel_data(self) -> Dict[str, Any]:
         """
-        Draw the worm's history panel and glue if it exists.
-        Args:
-            surface (pygame.Surface): The surface to draw on.
-            x_offset (int): Horizontal offset for the panel (for multi-worm display).
+        Describe the worm's history panel for the viewer.
+
+        Returns:
+            Dict with the appetite header and one row per meal: thumbnail id,
+            swatch color, optional borders, contrast % or HSV text.
         """
-        # Only draw panel if enabled and there is content
-        if not self.panel_enabled or len(self.history) == 0:
-            return
-        # Draw panel background (use compact width if HSV text hidden)
-        panel_rect = pygame.Rect(self.panel_x + x_offset, self.panel_y, self.get_panel_width(), self.panel_height)
-        pygame.draw.rect(surface, self.panel_bg_color, panel_rect)
-        # Draw appetite range header
-        font = pygame.font.SysFont(None, self.text_height)
-        appetite_text = f"[{self.appetite_min:.0%}-{self.appetite_max:.0%}] j:{self.jitter_chance:.0%}"
-        appetite_surf = font.render(appetite_text, True, (180, 180, 180))
-        surface.blit(appetite_surf, (self.panel_x + self.spacing + x_offset, self.panel_y + self.spacing))
+        header = f"[{self.appetite_min:.0%}-{self.appetite_max:.0%}] j:{self.jitter_chance:.0%}"
         # Compute consecutive distances and find min/max indices
         cons_dists = []
         cons_min_idx = -1
@@ -459,26 +384,16 @@ class Worm:
                 cons_min_idx = cons_dists.index(min_d) + 1
                 cons_max_idx = cons_dists.index(max_d) + 1
 
-        # Draw each history entry
-        y_offset = self.panel_y + self.spacing + self.text_height + self.spacing
+        rows = []
         for idx, entry in enumerate(self.history):
-            # Draw chunk preview
-            preview = pygame.transform.scale(entry.chunk_surface,
-                                          (self.chunk_preview_size, self.chunk_preview_size))
-            preview_rect = preview.get_rect(topleft=(self.panel_x + self.spacing + x_offset, y_offset))
-            surface.blit(preview, preview_rect)
+            row: Dict[str, Any] = {"thumb": entry.uid, "rgb": list(entry.rgb_color)}
 
             # Chunk preview border: wild (red) or stretch (yellow)
             if self.show_contrast_markers:
                 if entry.wild:
-                    pygame.draw.rect(surface, (255, 60, 60), preview_rect, 2)
+                    row["thumb_border"] = [255, 60, 60]
                 elif entry.stretch:
-                    pygame.draw.rect(surface, (255, 200, 40), preview_rect, 2)
-
-            # Draw color swatch
-            swatch_rect = pygame.Rect(preview_rect.right + self.spacing, y_offset,
-                                    self.chunk_preview_size, self.chunk_preview_size)
-            pygame.draw.rect(surface, entry.rgb_color, swatch_rect)
+                    row["thumb_border"] = [255, 200, 40]
 
             # Swatch border and contrast percentage overlay
             is_min = idx == cons_min_idx
@@ -488,9 +403,9 @@ class Worm:
             if self.show_contrast_markers:
                 # Swatch border: green for max, blue for min consecutive distance
                 if is_max:
-                    pygame.draw.rect(surface, (60, 255, 120), swatch_rect, 2)
+                    row["swatch_border"] = [60, 255, 120]
                 elif is_min:
-                    pygame.draw.rect(surface, (100, 160, 255), swatch_rect, 2)
+                    row["swatch_border"] = [100, 160, 255]
 
                 # Contrast % text: wild/stretch show their own, min/max show consecutive
                 if entry.wild:
@@ -503,27 +418,14 @@ class Worm:
                     swatch_pct, pct_color = cons_dists[idx - 1], (100, 160, 255)
 
             if swatch_pct is not None:
-                pct_text = f"{swatch_pct:.0%}"
-                pct_surf = font.render(pct_text, True, pct_color)
-                pct_rect = pct_surf.get_rect(center=swatch_rect.center)
-                surface.blit(pct_surf, pct_rect)
+                row["pct"] = f"{swatch_pct:.0%}"
+                row["pct_color"] = list(pct_color)
             elif self.show_hsv_text:
                 h, s, v = entry.hsv_color
-                hsv_text = f"H:{h:.0f}° S:{s:.2f} V:{v:.2f}"
-                text = font.render(hsv_text, True, (255, 255, 255))
-                text_rect = text.get_rect(midleft=(swatch_rect.right + self.spacing,
-                                                 y_offset + self.chunk_preview_size // 2))
-                surface.blit(text, text_rect)
+                row["hsv"] = f"H:{h:.0f}° S:{s:.2f} V:{v:.2f}"
+            rows.append(row)
 
-            # Advance to next row
-            y_offset += self.chunk_preview_size + self.spacing
-
-    def get_panel_width(self) -> int:
-        """Return effective panel width; compact when HSV text is hidden."""
-        if self.show_hsv_text:
-            return self.panel_width
-        # Compact layout: preview + swatch + paddings
-        return min(self.panel_width, (self.spacing * 3) + (self.chunk_preview_size * 2))
+        return {"id": self.uid, "header": header, "rows": rows}
 
     def select_next_chunk(self, chunks: List[Chunk]) -> Optional[Chunk]:
         """

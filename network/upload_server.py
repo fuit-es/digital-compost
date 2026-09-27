@@ -1,23 +1,32 @@
 """HTTP upload server."""
+import os
+import tempfile
 import threading
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from urllib.request import urlopen, Request
 from urllib.parse import urlparse
-from typing import Dict, Any, Callable
+from typing import Callable, Dict, Any, Optional
 from utils.logging_utils import get_logger
 
 _logger = get_logger(__name__)
 
 
+_IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.heic', '.gif'}
+_AUDIO_EXTS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.aiff'}
+_WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")
+
+
 class UploadServer:
-    """Flask-based HTTP server for receiving image uploads."""
+    """Flask-based HTTP server for receiving uploads."""
 
     def __init__(
         self,
         host: str,
         port: int,
         config: Dict[str, Any],
-        on_upload_callback: Callable[[bytes, int, int], None]
+        on_upload_callback: Callable[[bytes, int, int], None],
+        on_audio_callback: Optional[Callable[[str], None]] = None,
+        viewer_hub=None,
     ):
         """
         Initialize the upload server.
@@ -26,14 +35,21 @@ class UploadServer:
             host: Host address to bind to
             port: Port to listen on
             config: Server configuration
-            on_upload_callback: Callback when upload is received (bytes, width, height)
+            on_upload_callback: Callback for image uploads (bytes, width, height)
+            on_audio_callback: Callback for audio uploads (temp file path)
+            viewer_hub: Optional ViewerHub; serves the browser renderer at / and /ws
         """
+        self.viewer_hub = viewer_hub
         self.host = host
         self.port = port
         self.config = config
         self._on_upload = on_upload_callback
+        self._on_audio = on_audio_callback
         self.app = None
         self.thread = None
+
+        # Live stats updated by the main loop
+        self.stats: Dict[str, Any] = {"fps": 0.0, "chunks": 0}
 
         # Server limits
         server_cfg = config.get("server", {})
@@ -59,66 +75,104 @@ class UploadServer:
         def health():
             return jsonify({"status": "ok"})
 
+        @app.get("/stats")
+        def stats():
+            return jsonify(self.stats)
+
+        if self.viewer_hub is not None:
+            from flask_sock import Sock
+            sock = Sock(app)
+
+            @app.get("/")
+            def viewer_index():
+                return send_from_directory(_WEB_DIR, "index.html")
+
+            @app.get("/web/<path:filename>")
+            def viewer_static(filename):
+                return send_from_directory(_WEB_DIR, filename)
+
+            @sock.route("/ws")
+            def viewer_ws(ws):
+                self.viewer_hub.serve(ws)
+
         @app.post("/post-compost-upload")
         def post_compost_upload():
-            # Accept only a URL to a file; we will download in-memory and process
-            url = None
+            data = None
+            filename = None
             target_width = None
             target_height = None
 
-            if request.is_json:
+            # --- Multipart file upload ---
+            if request.content_type and request.content_type.startswith("multipart/form-data"):
+                f = request.files.get("file")
+                if not f:
+                    return jsonify({"ok": False, "error": "missing 'file' field"}), 400
+                data = f.read()
+                filename = f.filename or ""
+                if len(data) > self.max_download_bytes:
+                    return jsonify({"ok": False, "error": "file too large"}), 413
+                target_width = request.form.get("width", type=int)
+                target_height = request.form.get("height", type=int)
+
+            # --- JSON with URL ---
+            elif request.is_json:
                 payload = request.get_json(silent=True) or {}
                 thingie = payload.get("thingie")
+                url = None
                 if thingie and thingie.get("file_ref"):
                     url = thingie.get("file_ref").get("file_url")
-                    # Extract width and height from the 'at' object if available
                     at_obj = thingie.get("at")
                     if at_obj:
-                        if "width" in at_obj:
-                            target_width = at_obj.get("width")
-                            _logger.debug("Extracted target width: %s", target_width)
-                        if "height" in at_obj:
-                            target_height = at_obj.get("height")
-                            _logger.debug("Extracted target height: %s", target_height)
+                        target_width = at_obj.get("width")
+                        target_height = at_obj.get("height")
 
-            if not url:
-                return jsonify({"ok": False, "error": "missing 'url'"}), 400
+                if not url:
+                    return jsonify({"ok": False, "error": "missing 'url'"}), 400
 
-            # Basic URL validation
-            parsed = urlparse(url)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                return jsonify({"ok": False, "error": "invalid url"}), 400
+                parsed = urlparse(url)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    return jsonify({"ok": False, "error": "invalid url"}), 400
 
-            # Download with size limit and timeout
-            try:
-                req = Request(url, headers={"User-Agent": "fuites-compost/1.0"})
-                with urlopen(req, timeout=self.download_timeout) as resp:
-                    # Read with cap
-                    data_chunks = []
-                    total = 0
-                    chunk_size = 256 * 1024
-                    while True:
-                        chunk = resp.read(chunk_size)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if total > self.max_download_bytes:
-                            return jsonify({"ok": False, "error": "file too large"}), 413
-                        data_chunks.append(chunk)
-                    data = b"".join(data_chunks)
-            except Exception as exc:
-                return jsonify({"ok": False, "error": f"download failed: {exc}"}), 502
+                filename = os.path.basename(parsed.path)
+
+                try:
+                    req = Request(url, headers={"User-Agent": "fuites-compost/1.0"})
+                    with urlopen(req, timeout=self.download_timeout) as resp:
+                        dl_chunks = []
+                        total = 0
+                        while True:
+                            chunk = resp.read(256 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > self.max_download_bytes:
+                                return jsonify({"ok": False, "error": "file too large"}), 413
+                            dl_chunks.append(chunk)
+                        data = b"".join(dl_chunks)
+                except Exception as exc:
+                    return jsonify({"ok": False, "error": f"download failed: {exc}"}), 502
+
+            else:
+                return jsonify({"ok": False, "error": "expected multipart/form-data or JSON"}), 400
 
             if not data:
-                return jsonify({"ok": False, "error": "empty response"}), 502
+                return jsonify({"ok": False, "error": "empty payload"}), 400
 
-            # Queue for main-thread processing and return quickly
             try:
-                if target_width is not None and target_height is not None:
-                    _logger.debug("Upload received: %dx%d", target_width, target_height)
+                ext = os.path.splitext(filename or "")[1].lower()
+                if ext in _AUDIO_EXTS:
+                    if not self._on_audio:
+                        return jsonify({"ok": False, "error": "audio uploads not supported"}), 400
+                    tmp = tempfile.NamedTemporaryFile(
+                        suffix=ext, prefix="compost_upload_", delete=False
+                    )
+                    tmp.write(data)
+                    tmp.close()
+                    self._on_audio(tmp.name)
+                elif ext in _IMAGE_EXTS:
+                    self._on_upload(data, target_width, target_height)
                 else:
-                    _logger.debug("Upload received (no target dimensions)")
-                self._on_upload(data, target_width, target_height)
+                    return jsonify({"ok": False, "error": f"unsupported file type: {ext or '(none)'}"}), 400
                 return jsonify({"ok": True}), 200
             except Exception as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 500

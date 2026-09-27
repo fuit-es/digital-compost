@@ -1,6 +1,6 @@
 simulation:
   export_dir: "exports"  # Base directory for all exports
-  window:
+  window:               # World size. auto = follow the browser viewport; numbers = fixed, letterboxed in the browser
     width: auto
     height: auto
   ui:
@@ -66,6 +66,7 @@ colors:
 server:
   host: 127.0.0.1
   port: 5055
+  open_browser: true   # Open the viewer (http://host:port/) on start
   max_download_bytes: 26214400 # 25MB
   download_timeout_sec: 15
 

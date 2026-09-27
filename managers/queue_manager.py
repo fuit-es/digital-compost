@@ -1,7 +1,6 @@
 """Upload queue and background processing management."""
 import multiprocessing
 import os
-import threading
 import uuid
 import io
 import numpy as np
@@ -13,7 +12,6 @@ from typing import Dict, Any, List, Tuple, Callable, Optional
 from processors import ChunkData, BatchComplete, init_worker, process_task
 from utils.image_utils import scale_image_to_fit, resize_image_to_dimensions
 from utils.logging_utils import get_logger
-from utils.system_utils import open_file_dialog_sync
 from entities import Chunk
 
 _logger = get_logger(__name__)
@@ -45,10 +43,6 @@ class QueueManager:
 
         # Upload queue (HTTP -> Main thread)
         self._upload_queue: Queue[Tuple[bytes, Optional[int], Optional[int]]] = Queue()
-
-        # File dialog results queue (Dialog threads -> Main thread)
-        self._dialog_queue: Queue[Tuple[str, Any]] = Queue()
-        self._dialog_open = False
 
         # Results queue (workers -> main thread)
         self._results_queue: multiprocessing.Queue = multiprocessing.Queue()
@@ -115,11 +109,24 @@ class QueueManager:
             True if submission succeeded, False otherwise
         """
         try:
-            bytes_io = io.BytesIO(image_bytes)
-            image = pygame.image.load(bytes_io).convert_alpha()
-        except Exception as exc:
-            _logger.warning("Failed to load image from bytes: %s", exc)
-            return False
+            image = pygame.image.load(io.BytesIO(image_bytes))
+        except Exception:
+            # pygame can't read HEIC; fall back to Pillow
+            try:
+                import pillow_heif
+                from PIL import Image
+                pillow_heif.register_heif_opener()
+                pil_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+                image = pygame.image.frombytes(pil_img.tobytes(), pil_img.size, "RGBA")
+            except Exception as exc:
+                _logger.warning("Failed to load image from bytes: %s", exc)
+                return False
+
+        # Give opaque images an alpha channel (convert_alpha() needs a display, which we don't have)
+        if not image.get_flags() & pygame.SRCALPHA:
+            rgba = pygame.Surface(image.get_size(), pygame.SRCALPHA)
+            rgba.blit(image, (0, 0))
+            image = rgba
 
         self.submit_image(image, target_width, target_height)
         return True
@@ -215,60 +222,6 @@ class QueueManager:
         task = ("sound", audio_path, batch_id, None, None, None)
         self._pool.apply_async(process_task, args=(task,))
         _logger.info("Sound batch %s queued: %s", batch_id, os.path.basename(audio_path))
-
-    # ----------------------------------------------------------------
-    # Non-blocking file dialog (native macOS via osascript)
-    # ----------------------------------------------------------------
-    IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.heic', '.gif'}
-    AUDIO_EXTS = {'.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.aiff'}
-
-    def open_file_dialog(self) -> None:
-        """Open file dialog for image or audio (non-blocking, multiple selection)."""
-        if self._dialog_open:
-            return
-        self._dialog_open = True
-
-        def _run():
-            try:
-                paths = open_file_dialog_sync(self.IMAGE_EXTS, self.AUDIO_EXTS)
-
-                for path in paths:
-                    if not os.path.exists(path):
-                        continue
-                    ext = os.path.splitext(path)[1].lower()
-                    if ext in self.IMAGE_EXTS:
-                        if ext == '.heic':
-                            import pillow_heif
-                            pillow_heif.register_heif_opener()
-                            from PIL import Image
-                            pil_img = Image.open(path).convert("RGBA")
-                            surface = pygame.image.fromstring(pil_img.tobytes(), pil_img.size, "RGBA")
-                        else:
-                            surface = pygame.image.load(path).convert_alpha()
-                        self._dialog_queue.put(("image", surface))
-                    elif ext in self.AUDIO_EXTS:
-                        self._dialog_queue.put(("audio", path))
-                    else:
-                        _logger.warning("Unknown file type: %s", ext)
-
-            except Exception as e:
-                _logger.warning("File dialog error: %s", e)
-            finally:
-                self._dialog_open = False
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def process_dialogs(self) -> None:
-        """Process completed file dialog results. Call from main loop."""
-        while True:
-            try:
-                kind, data = self._dialog_queue.get_nowait()
-                if kind == "image":
-                    self.submit_image(data, None, None)
-                elif kind == "audio":
-                    self.submit_audio(data)
-            except Empty:
-                break
 
     def _process_pending_uploads(self, max_items: int = 4) -> None:
         """

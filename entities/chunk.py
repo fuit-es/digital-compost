@@ -1,18 +1,21 @@
+import itertools
 import pygame
 import pymunk
 import math
 import random
 from typing import List, Tuple, Dict, Any, Optional
 import numpy as np
-from utils.geometry_utils import build_curve_surface
 from utils.logging_utils import get_logger
 from utils.math_utils import lerp
 
 _logger = get_logger(__name__)
 
+# Stable ids shared with the browser renderer
+_next_uid = itertools.count(1)
+
 
 class Chunk:
-    """Handles a single polygon chunk with physics and a surface."""
+    """Handles a single polygon chunk with physics and a surface (drawn by the browser viewer)."""
 
     @classmethod
     def from_segment(
@@ -70,13 +73,15 @@ class Chunk:
         chunk = cls.__new__(cls)
 
         # Set required attributes manually (mirroring __init__)
+        chunk.uid = next(_next_uid)
         chunk.config = config
         chunk.space = space
         chunk.segment_surface = surface
+        # Surface sent to the viewer; render_scale is relative to it
+        chunk.texture_surface = surface
+        chunk.render_scale = 1.0
         chunk.audio_path = audio_path
         chunk.original_line_width = original_line_width
-        chunk._cached_surfaces = {}
-        chunk._last_volume = -1.0
 
         # Handle curve_data - convert list back to numpy array if needed
         if curve_data is not None:
@@ -87,9 +92,6 @@ class Chunk:
         else:
             chunk.curve_data = None
 
-        sim_cfg = config["simulation"]
-        chunk.width = sim_cfg["window"]["width"]
-        chunk.height = sim_cfg["window"]["height"]
         # Handle gradual shrinkage for downsized chunks
         if downsized:
             compress_cfg = config.get("image", {}).get("compression", {})
@@ -113,8 +115,6 @@ class Chunk:
         else:
             from utils.color_utils import calculate_chunk_color
             chunk.cached_hsv_color = calculate_chunk_color(surface)
-
-        chunk.original_opacity = 255
 
         chunk._setup_physics_body(physics_vertices, spawn_position, spawn_velocity)
 
@@ -255,173 +255,28 @@ class Chunk:
         # Add to physics space
         self.space.add(self.body, self.shape)
 
-    def _get_volume_scaled_surface(
-        self,
-        volume: float
-    ) -> Tuple[pygame.Surface, int]:
-        """
-        Get surface scaled by volume for sound chunks.
+    def update_shrink(self) -> None:
+        """Advance the gradual shrinkage of an entropy-downsized chunk."""
+        if self._shrink_start_ms is None:
+            return
+        elapsed = pygame.time.get_ticks() - self._shrink_start_ms
+        t = min(1.0, elapsed / self._shrink_duration_ms) if self._shrink_duration_ms > 0 else 1.0
+        self.render_scale = lerp(1.0, self._shrink_target_scale, t)
+        if t >= 1.0:
+            # Bake the final size so exports and worm history use the shrunk surface
+            w, h = self.texture_surface.get_size()
+            new_size = (max(1, int(w * self.render_scale)), max(1, int(h * self.render_scale)))
+            self.segment_surface = pygame.transform.smoothscale(self.texture_surface, new_size)
+            self._shrink_start_ms = None
 
-        Args:
-            volume: Volume level (0.0-1.0)
-
-        Returns:
-            (surface, alpha) tuple
-        """
-        drawing_cfg = self.config.get("sound", {}).get("hover", {}).get("volume_scaling", {})
-        perceptual_exp = drawing_cfg.get("perceptual_exponent", 0.7)
-        line_mult = drawing_cfg.get("line_width_multiplier", 2.0)
-        alpha_boost = drawing_cfg.get("alpha_boost", 0.5)
-
-        perceptual_volume = math.pow(volume, perceptual_exp)
-
-        # Scale line width
-        scaled_line_width = max(1, int(self.original_line_width * (1.0 + perceptual_volume * line_mult)))
-
-        # Scale opacity
-        pts, rgba, surf_w, surf_h, padding = self.curve_data
-        original_alpha = rgba[3]
-        scaled_alpha = min(1.0, original_alpha * (1.0 + perceptual_volume * alpha_boost))
-        scaled_rgba = (rgba[0], rgba[1], rgba[2], scaled_alpha)
-
-        # Cache by rounded values
-        line_cache_key = (scaled_line_width // 2) * 2
-        alpha_cache_key = int(scaled_alpha * 10) / 10.0
-        cache_key = (line_cache_key, alpha_cache_key)
-
-        if cache_key not in self._cached_surfaces:
-            self._cached_surfaces[cache_key] = build_curve_surface(
-                pts, scaled_rgba, surf_w, surf_h,
-                line_width=line_cache_key, padding=padding
-            )
-
-        return self._cached_surfaces[cache_key], 255
-
-    def _get_torus_positions(
-        self,
-        pos_x: float,
-        pos_y: float,
-        rect: pygame.Rect,
-        width: int,
-        height: int
-    ) -> List[Tuple[float, float]]:
-        """
-        Calculate all positions to draw chunk at for torus wrapping.
-
-        Args:
-            pos_x: Current x position
-            pos_y: Current y position
-            rect: Bounding rectangle of rotated surface
-            width: Screen width
-            height: Screen height
-
-        Returns:
-            List of (x, y) positions to draw at
-        """
-        positions = [(pos_x, pos_y)]
-
-        # Horizontal wrap
-        if rect.left < 0:
-            positions.append((pos_x + width, pos_y))
-        elif rect.right > width:
-            positions.append((pos_x - width, pos_y))
-
-        # Vertical wrap
-        if rect.top < 0:
-            positions.append((pos_x, pos_y + height))
-        elif rect.bottom > height:
-            positions.append((pos_x, pos_y - height))
-
-        # Corner wrap
-        if rect.left < 0 and rect.top < 0:
-            positions.append((pos_x + width, pos_y + height))
-        elif rect.left < 0 and rect.bottom > height:
-            positions.append((pos_x + width, pos_y - height))
-        elif rect.right > width and rect.top < 0:
-            positions.append((pos_x - width, pos_y + height))
-        elif rect.right > width and rect.bottom > height:
-            positions.append((pos_x - width, pos_y - height))
-
-        return positions
-
-    def _draw_debug_outline(
-        self,
-        surface: pygame.Surface,
-        center_x: float,
-        center_y: float
-    ) -> None:
-        """Draw debug physics outline at given center position."""
-        colors = self.config["colors"]
-        cos_a = math.cos(self.body.angle)
-        sin_a = math.sin(self.body.angle)
-        transformed_vertices = [
-            (
-                v.x * cos_a - v.y * sin_a + center_x,
-                v.x * sin_a + v.y * cos_a + center_y
-            )
-            for v in self.shape.get_vertices()
-        ]
-        pygame.draw.polygon(surface, colors["RED"], transformed_vertices, width=1)
-
-    def draw(self, surface: pygame.Surface, debug_mode: bool = False, torus_world: bool = False, volume: float = 0.0) -> None:
-        """
-        Draw the chunk on a Pygame surface.
-
-        Args:
-            surface: The surface to draw on
-            debug_mode: Whether to draw debug outlines
-            torus_world: Whether the simulation uses torus wrapping
-            volume: Volume level (0.0-1.0) for highlighting active sound chunks
-        """
-        pos = self.body.position
-        angle_degrees = math.degrees(-self.body.angle)
-
-        # Get working surface (volume-scaled for sound chunks, or original)
-        if volume > 0.0 and self.curve_data is not None and self.original_line_width is not None:
-            working_surface, chunk_alpha = self._get_volume_scaled_surface(volume)
-        else:
-            working_surface = self.segment_surface
-            chunk_alpha = self.original_opacity
-
-        # Gradual shrinkage animation for entropy-downsized chunks
-        if self._shrink_start_ms is not None:
-            elapsed = pygame.time.get_ticks() - self._shrink_start_ms
-            t = min(1.0, elapsed / self._shrink_duration_ms) if self._shrink_duration_ms > 0 else 1.0
-            scale = lerp(1.0, self._shrink_target_scale, t)
-            new_w = max(1, int(working_surface.get_width() * scale))
-            new_h = max(1, int(working_surface.get_height() * scale))
-            working_surface = pygame.transform.scale(working_surface, (new_w, new_h))
-            if t >= 1.0:
-                self.segment_surface = working_surface
-                self._shrink_start_ms = None
-
-        rotated_surface = pygame.transform.rotate(working_surface, angle_degrees)
-        rotated_surface.set_alpha(chunk_alpha)
-
-        width, height = surface.get_size()
-
-        # Get positions to draw at (handles torus wrapping)
-        if torus_world:
-            rect = rotated_surface.get_rect(center=(int(pos.x), int(pos.y)))
-            positions = self._get_torus_positions(pos.x, pos.y, rect, width, height)
-        else:
-            positions = [(pos.x, pos.y)]
-
-        # Draw at all positions
-        for x, y in positions:
-            rect = rotated_surface.get_rect(center=(int(x), int(y)))
-            surface.blit(rotated_surface, rect)
-            if debug_mode:
-                self._draw_debug_outline(surface, x, y)
+    @property
+    def extent(self) -> float:
+        """Largest on-screen dimension of the chunk (pixels)."""
+        return max(self.texture_surface.get_size()) * self.render_scale
 
 
 class GluedChunk:
-    """A chunk that has been attracted to glue. Thin wrapper for rendering."""
+    """A chunk that has been attracted to glue, tinted with its meal color."""
     def __init__(self, chunk: Chunk, tint_rgb: tuple):
         self.chunk = chunk
         self.tint_rgb = tint_rgb
-
-    def draw(self, surface: pygame.Surface, debug_mode: bool = False, torus_world: bool = False, volume: float = 0.0):
-        self.chunk.draw(surface, debug_mode=debug_mode, torus_world=torus_world, volume=volume)
-        centroid = self.chunk.body.position
-        pygame.draw.circle(surface, self.tint_rgb, (int(centroid.x), int(centroid.y)), 5)

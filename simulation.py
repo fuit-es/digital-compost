@@ -1,8 +1,7 @@
 """Main simulation orchestrator."""
-import time
 import pygame
 import pymunk
-from typing import List, Dict, Any, Set, Optional
+from typing import List, Dict, Any, Set, Optional, Tuple
 
 from entities import Worm, Glue, Chunk
 from managers import (
@@ -13,7 +12,6 @@ from managers import (
     QueueManager,
     WormManager,
 )
-from ui import UIManager
 from utils.logging_utils import get_logger
 
 _logger = get_logger(__name__)
@@ -23,14 +21,13 @@ class Simulation:
     """
     Orchestrates the Felzenszwalb-based chunk simulation.
     Delegates responsibilities to specialized managers.
+    Rendering happens in the browser viewer (see network/viewer_hub.py).
     """
 
     def __init__(
         self,
         config: Dict[str, Any],
         space: pymunk.Space,
-        screen: pygame.Surface,
-        font: pygame.font.Font
     ) -> None:
         """
         Initialize the simulation with provided parameters.
@@ -38,13 +35,9 @@ class Simulation:
         Args:
             config: The entire configuration loaded from YAML.
             space: The physics space.
-            screen: The main Pygame window surface.
-            font: Font for rendering text/UI.
         """
         self.config = config
         self.space = space
-        self.screen = screen
-        self.font = font
         self.debug_mode = False
         self.dark_mode = config["simulation"].get("dark_mode", False)
         self.glue_visuals_enabled = config["worm"]["glue"]["visual"].get("enabled", True)
@@ -62,7 +55,6 @@ class Simulation:
         self.should_quit = False  # Signal for main loop to stop
 
         # Initialize managers
-        self.ui_manager = UIManager(config, screen, font)
         self.audio_manager = AudioManager(config)
         self.boundary_manager = BoundaryManager(config, space, self.width, self.height)
         self.worm_manager = WormManager(config)
@@ -77,8 +69,8 @@ class Simulation:
     # ----------------------------------------------------------------
     # Delegation methods
     # ----------------------------------------------------------------
-    def handle_audio_hover(self, mouse_pos) -> None:
-        """Handle proximity-based audio playback."""
+    def handle_audio_hover(self, mouse_pos: Optional[Tuple[float, float]]) -> None:
+        """Handle proximity-based audio playback (None when no cursor is over the viewer)."""
         self.audio_manager.handle_audio_hover(mouse_pos, self.chunks)
 
     def toggle_torus_world(self) -> None:
@@ -129,53 +121,52 @@ class Simulation:
         self.worm_manager.spawn_worms_for_upload(upload_type, len(self.chunks), available)
 
     # ----------------------------------------------------------------
-    # UI methods
+    # Viewer commands
     # ----------------------------------------------------------------
-    def draw_ui(self) -> None:
-        """Draw the UI bar, buttons, and debug status."""
-        if not self.ui_enabled:
-            return
-        self.ui_manager.draw_ui(
-            self.debug_mode,
-            self.boundary_manager.torus_world,
-            self.worm_manager.history_panel_enabled,
-            self.glue_visuals_enabled,
-            self.ui_enabled,
-            len(self.chunks),
-            audio_in_recording=self.input_manager.recording,
-            audio_out_recording=self.export_manager.compost_recording,
-            dark_mode=self.dark_mode,
-        )
-
-    def handle_button_click(self, mouse_pos) -> None:
-        """Handle button clicks based on mouse position."""
-        if not self.ui_enabled:
-            return
-        button = self.ui_manager.handle_click(mouse_pos)
-        if button == "upload":
-            self.upload_file()
-        elif button == "audio_in":
+    def handle_key(self, key: str) -> None:
+        """Apply a keyboard shortcut or pill bar button sent by the viewer."""
+        if key == "d":
+            self.dark_mode = not self.dark_mode
+        elif key == "t":
+            self.toggle_torus_world()
+        elif key == "h":
+            self.toggle_history_panel()
+        elif key == "g":
+            self.glue_visuals_enabled = not self.glue_visuals_enabled
+        elif key == "i":
             self._toggle_audio_in_recording()
-        elif button == "audio_out":
+        elif key == "o":
             self._toggle_compost_recording()
-        elif button == "clear":
+        elif key == "c":
             self.clear_chunks()
-        elif button == "export":
-            self.export_glues()
-        elif button == "quit":
+        elif key == "q":
             self.should_quit = True
+        elif key == "escape":
+            self.ui_enabled = not self.ui_enabled
+        elif key == "e":
+            self.export_glues()
+        elif key == "k":
+            self.debug_mode = not self.debug_mode
+        elif key == "p":
+            self.processing_indicator_enabled = not self.processing_indicator_enabled
+
+    def resize(self, width: int, height: int) -> None:
+        """Change the world size to match the viewer."""
+        if (width, height) == (self.width, self.height):
+            return
+        _logger.info("World resized to %dx%d", width, height)
+        self.width = width
+        self.height = height
+        # Glues read the world size from config for torus flocking
+        self.config["simulation"]["window"]["width"] = width
+        self.config["simulation"]["window"]["height"] = height
+        self.boundary_manager.resize(width, height)
+        self.export_manager.width, self.export_manager.height = width, height
+        self.queue_manager.width, self.queue_manager.height = width, height
 
     # ----------------------------------------------------------------
     # Upload methods
     # ----------------------------------------------------------------
-    def upload_file(self) -> None:
-        """Open file picker for image or audio (non-blocking)."""
-        self.queue_manager.open_file_dialog()
-
-    def process_file_dialogs(self) -> None:
-        """Process completed file dialog results."""
-        self.queue_manager.process_dialogs()
-
     def submit_image(self, image: pygame.Surface, target_width: int = None, target_height: int = None) -> None:
         """Submit an image for background processing."""
         self.queue_manager.submit_image(image, target_width, target_height)
@@ -188,7 +179,7 @@ class Simulation:
     # Core update methods
     # ----------------------------------------------------------------
     def update_chunks(self) -> None:
-        """Update (draw) all chunks in the simulation and process worm behavior."""
+        """Advance chunk animations and process worm and glue behavior."""
         # Apply torus wrapping (internally checks if enabled)
         self.boundary_manager.handle_torus_wrapping()
 
@@ -202,27 +193,16 @@ class Simulation:
         # Check worm lifecycle with accurate available food count
         self.worm_manager.check_worm_completion(len(available_chunks), self.glues)
 
-        # Draw non-glued chunks
         for chunk in self.chunks:
-            if id(chunk) not in glued_chunk_ids:
-                volume = self.audio_manager.get_volume(chunk)
-                chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=torus_world, volume=volume)
-
-        # Draw glued chunks and glue visuals
-        self._draw_glued_chunks(glued_chunk_ids, torus_world)
+            chunk.update_shrink()
 
         # Update worm + glues (delegated to WormManager)
         self.worm_manager.update_worm_and_glues(
             self.glues,
             available_chunks,
             self.remove_chunk,
-            self.glue_visuals_enabled,
-            self.screen,
             torus_world
         )
-
-        # Draw consumption particle effects
-        self.worm_manager.update_and_draw_particles(self.screen)
 
         # Auto-export check (delegated to WormManager)
         expired_glues, schedule_worms = self.worm_manager.get_glues_for_auto_export(
@@ -231,49 +211,6 @@ class Simulation:
         )
         if expired_glues:
             self._do_export(expired_glues, schedule_worms)
-
-        # Draw worm history panels
-        self._draw_history_panels()
-
-        # Processing indicator (independent of UI toggle)
-        if self.processing_indicator_enabled and self.queue_manager.active_batch_count > 0:
-            ind = self.config["simulation"]["ui"]["processing_indicator"]
-            margin = ind["margin"]
-            self.ui_manager.draw_hourglass(
-                self.width - ind["width"] - margin,
-                margin,
-                time.time(),
-                ind["width"],
-                ind["height"],
-            )
-
-    def _draw_glued_chunks(self, glued_chunk_ids: Set[int], torus_world: bool) -> None:
-        """Draw glued chunks and glue visuals."""
-        if self.glue_visuals_enabled:
-            for glue in self.glues:
-                for glued_chunk in glue.glued_chunks:
-                    volume = self.audio_manager.get_volume(glued_chunk.chunk)
-                    glued_chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=torus_world, volume=volume)
-            for glue in self.glues:
-                glue.draw(self.screen)
-        else:
-            # Draw glued chunks without tint
-            for glue in self.glues:
-                for glued_chunk in glue.glued_chunks:
-                    volume = self.audio_manager.get_volume(glued_chunk.chunk)
-                    glued_chunk.chunk.draw(self.screen, debug_mode=self.debug_mode, torus_world=torus_world, volume=volume)
-
-    def _draw_history_panels(self) -> None:
-        """Draw worm history panels."""
-        panel_spacing = 20
-        x_cursor = 0
-        for worm in self.worm_manager.worms:
-            if worm and worm.panel_enabled and len(worm.history) > 0:
-                worm.draw(self.screen, x_offset=x_cursor)
-                try:
-                    x_cursor += worm.get_panel_width() + panel_spacing
-                except Exception:
-                    x_cursor += worm.panel_width + panel_spacing
 
     # ----------------------------------------------------------------
     # Chunk availability methods

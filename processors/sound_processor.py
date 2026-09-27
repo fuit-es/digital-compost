@@ -119,7 +119,7 @@ def segment_audio(
         surf_h = int(round(lerp(min_h, max_h, u)))
 
         # Build surface and vertices using shared functions
-        surface = build_curve_surface(pts, rgba, surf_w, surf_h, line_width=line_w, padding=padding)
+        surface = build_curve_surface(pts, rgba, surf_w, surf_h, line_width=line_w, padding=padding, antialias=True)
         vertices = convex_hull_vertices_from_curve(pts, surf_w, surf_h, padding=padding, line_width=line_w)
 
         # Find audio path for this chunk

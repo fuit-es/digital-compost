@@ -76,6 +76,19 @@ class BoundaryManager:
         self.clear_boundaries()
         self._create_boundaries()
 
+    def resize(self, width: int, height: int) -> None:
+        """Move the boundaries to a new world size and pull stray bodies back inside."""
+        self.width = width
+        self.height = height
+        self.clear_boundaries()
+        self._create_boundaries()
+        for body in self.space.bodies:
+            if body.body_type == pymunk.Body.STATIC:
+                continue
+            x = min(max(body.position.x, 0.0), float(width))
+            y = min(max(body.position.y, 0.0), float(height))
+            body.position = pymunk.Vec2d(x, y)
+
     def _get_body_margin(self, body: pymunk.Body) -> float:
         """
         Get the wrapping margin for a body (cached for performance).

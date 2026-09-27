@@ -1,0 +1,122 @@
+:root {
+  --page: #ffffff;
+  --pill-bg: rgba(20, 20, 20, 0.63);
+  --btn-bg: #3c3c3c;
+  --fg: #ffffff;
+  --fg-dim: #c8c8c8;
+  --divider: #5a5a5a;
+  --rec: #ff4646;
+  --font: "Helvetica Neue", Helvetica, Arial, sans-serif;
+}
+
+body.dark { --page: #000000; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--page);
+  font-family: var(--font);
+  user-select: none;
+}
+
+#stage, #stage canvas { position: fixed; inset: 0; display: block; }
+
+/* Floating pill bar */
+#pill {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 24px;
+  border-radius: 16px;
+  background: var(--pill-bg);
+  color: var(--fg);
+  z-index: 3;
+}
+#pill[hidden] { display: none; }
+
+#pill button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  min-width: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--btn-bg);
+  color: var(--fg);
+  font: 13px var(--font);
+  cursor: pointer;
+}
+#pill button:hover { filter: brightness(1.25); }
+#pill button .key { color: var(--fg-dim); }
+#pill button .label { font-size: 11px; }
+#pill button .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--fg); }
+#pill button.recording .dot { background: var(--rec); }
+#pill svg { width: 10px; height: 10px; stroke: var(--fg); stroke-width: 2; fill: none; }
+
+#pill .divider { width: 1px; height: 18px; margin: 0 12px; background: var(--divider); }
+#pill .flags { display: flex; gap: 14px; font-size: 13px; color: #a0a0a0; }
+#pill .count { min-width: 40px; text-align: center; font-size: 14px; color: var(--fg-dim); }
+#pill .count.nonzero { color: var(--fg); }
+
+/* Worm history panels */
+#panels {
+  position: fixed;
+  display: flex;
+  gap: 20px;
+  align-items: flex-start;
+  pointer-events: none;
+  z-index: 2;
+}
+#panels[hidden] { display: none; }
+.panel { overflow: hidden; box-sizing: border-box; }
+.panel .header { color: #b4b4b4; font-size: 13px; line-height: 18px; white-space: nowrap; }
+.panel .row { display: flex; align-items: center; }
+.panel .row canvas, .panel .swatch { flex: none; box-sizing: border-box; }
+.panel .swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.panel .hsv { color: #fff; font-size: 12px; white-space: nowrap; }
+
+#hourglass { position: fixed; z-index: 2; pointer-events: none; }
+
+/* Connection status and upload errors */
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  border-radius: 12px;
+  background: var(--pill-bg);
+  color: var(--fg);
+  font-size: 13px;
+  z-index: 4;
+}
+#status[hidden] { display: none; }
+
+body.dragging::after {
+  content: "Drop images or sounds";
+  position: fixed;
+  inset: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #888;
+  border-radius: 16px;
+  color: #888;
+  font-size: 20px;
+  pointer-events: none;
+  z-index: 5;
+}
