@@ -77,6 +77,37 @@ def calculate_color_contrast(hsv1: Tuple[float, float, float],
     return _cone_contrast(hsv1, hsv2)
 
 
+def calculate_color_contrast_many(hsv1: Tuple[float, float, float],
+                                  hsv_many: Any,
+                                  config: Dict[str, Any]) -> np.ndarray:
+    """
+    Vectorized calculate_color_contrast: one reference color against many.
+
+    Args:
+        hsv1: Reference color (Hue: 0-360, Saturation: 0-1, Value: 0-1)
+        hsv_many: Sequence/array of shape (N, 3) of HSV colors
+        config: Configuration dictionary
+
+    Returns:
+        np.ndarray of N differences from 0.0 to 1.0 (same values as the scalar version)
+    """
+    arr = np.asarray(hsv_many, dtype=np.float64).reshape(-1, 3)
+    appetite_cfg = config["worm"]["appetite"]
+    if appetite_cfg.get("method", "cone") == "weighted":
+        return np.array([_weighted_contrast(hsv1, tuple(row), appetite_cfg) for row in arr])
+
+    h1, s1, v1 = hsv1
+    h1_rad = h1 * np.pi / 180
+    h_rad = arr[:, 0] * np.pi / 180
+    vs = arr[:, 2] * arr[:, 1]
+    dx = v1 * s1 * np.cos(h1_rad) - vs * np.cos(h_rad)
+    dy = v1 * s1 * np.sin(h1_rad) - vs * np.sin(h_rad)
+    dz = v1 - arr[:, 2]
+    raw = np.sqrt(dx * dx + dy * dy + dz * dz)
+    dmax = float(np.sqrt((v1 * s1 + 1) ** 2 + (v1 - 1) ** 2))
+    return raw / dmax
+
+
 def _cone_contrast(hsv1: Tuple[float, float, float],
                    hsv2: Tuple[float, float, float]) -> float:
     """Conical HSV distance, normalized per-point to 0-1.
