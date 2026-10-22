@@ -5,7 +5,7 @@ import math
 from typing import List, Tuple, Dict, Any, Optional, Set, Deque
 from collections import deque
 import numpy as np
-from utils.color_utils import calculate_color_contrast, hsv_to_rgb_int
+from utils.color_utils import calculate_color_contrast, calculate_color_contrast_many, hsv_to_rgb_int
 from utils.logging_utils import get_logger
 from utils.math_utils import compute_flocking_forces
 from entities.chunk import Chunk, GluedChunk
@@ -101,27 +101,6 @@ class Glue:
         mean_v = sum_v / n
         self.glow_rgb = hsv_to_rgb_int((mean_h, mean_s, mean_v))
 
-    def _find_nearest_meal_index(self, chunk: Chunk) -> Optional[Tuple[int, float]]:
-        """
-        Find the meal index with smallest color difference within vicinity thresholds.
-
-        Returns:
-            (meal_index, difference) or None if no match
-        """
-        best_idx: Optional[int] = None
-        best_diff: Optional[float] = None
-
-        for idx, entry in enumerate(self.worm_history):
-            diff = calculate_color_contrast(entry.hsv_color, chunk.cached_hsv_color, self.config)
-            if self.min_difference <= diff <= self.max_difference:
-                if best_diff is None or diff < best_diff:
-                    best_diff = diff
-                    best_idx = idx
-
-        if best_idx is not None and best_diff is not None:
-            return (best_idx, best_diff)
-        return None
-
     def _build_candidate_lists(
         self,
         available_chunks: List[Chunk]
@@ -129,22 +108,33 @@ class Glue:
         """
         Build candidate lists per meal color, sorted by color difference.
 
+        Each new chunk goes to the meal with the smallest color difference within
+        the vicinity thresholds (first meal wins ties).
+
         Returns:
             Dict mapping meal_index to deque of (difference, chunk) tuples
         """
         meal_to_candidates: Dict[int, List[Tuple[float, Chunk]]] = {}
 
-        for chunk in available_chunks:
-            chunk_id = id(chunk)
-            if chunk_id in self.attracted_chunk_ids or chunk_id in self.evaluated_chunk_ids:
-                continue
+        new_chunks = [
+            c for c in available_chunks
+            if id(c) not in self.attracted_chunk_ids and id(c) not in self.evaluated_chunk_ids
+        ]
+        if new_chunks and self.worm_history:
+            # One vectorized contrast pass per meal: (meals x new chunks)
+            new_hsv = [c.cached_hsv_color for c in new_chunks]
+            diffs = np.array([
+                calculate_color_contrast_many(entry.hsv_color, new_hsv, self.config)
+                for entry in self.worm_history
+            ])
+            in_range = (diffs >= self.min_difference) & (diffs <= self.max_difference)
+            masked = np.where(in_range, diffs, np.inf)
+            best_meal = np.argmin(masked, axis=0)
+            best_diff = masked[best_meal, np.arange(len(new_chunks))]
+            for j in np.nonzero(np.isfinite(best_diff))[0]:
+                meal_to_candidates.setdefault(int(best_meal[j]), []).append((float(best_diff[j]), new_chunks[j]))
 
-            match = self._find_nearest_meal_index(chunk)
-            if match is not None:
-                meal_idx, diff = match
-                meal_to_candidates.setdefault(meal_idx, []).append((diff, chunk))
-
-            self.evaluated_chunk_ids.add(chunk_id)
+        self.evaluated_chunk_ids.update(id(c) for c in new_chunks)
 
         # Sort and convert to deques
         result: Dict[int, Deque[Tuple[float, Chunk]]] = {}
