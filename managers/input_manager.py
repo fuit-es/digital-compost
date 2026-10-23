@@ -26,6 +26,7 @@ class InputManager:
         self.device = rec_cfg.get("device", None)
 
         self.recording = False
+        self.level = 0.0  # 0-1 input loudness, for the on-screen dot
         self._stream = None
         self._buffer: List[np.ndarray] = []
 
@@ -55,6 +56,10 @@ class InputManager:
             if status:
                 _logger.warning("Recording status: %s", status)
             self._buffer.append(indata.copy())
+            # Map -60..0 dBFS to 0..1; rise instantly, fall back slowly
+            rms = float(np.sqrt(np.mean(np.square(indata))))
+            db = 20.0 * np.log10(rms + 1e-9)
+            self.level = max(min(max((db + 60.0) / 60.0, 0.0), 1.0), self.level * 0.85)
 
         try:
             self._stream = sd.InputStream(
@@ -81,6 +86,7 @@ class InputManager:
                 _logger.warning("Error stopping stream: %s", e)
             self._stream = None
         self.recording = False
+        self.level = 0.0
 
         if not self._buffer:
             _logger.warning("No audio input recorded")

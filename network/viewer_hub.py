@@ -302,6 +302,7 @@ class ViewerHub:
                 "ui": sim.ui_enabled,
                 "indicator": sim.processing_indicator_enabled,
                 "rec_in": sim.input_manager.recording,
+                "rec_level": round(sim.input_manager.level, 3),
                 "rec_out": sim.export_manager.compost_recording,
             },
         }

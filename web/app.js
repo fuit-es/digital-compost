@@ -385,6 +385,7 @@ const pill = document.getElementById("pill");
 const panels = document.getElementById("panels");
 const hourglass = document.getElementById("hourglass");
 const statusEl = document.getElementById("status");
+const recLevel = document.getElementById("rec-level");
 
 const ICONS = {
   plus: '<svg viewBox="0 0 10 10"><path d="M5 0v10M0 5h10"/></svg>',
@@ -432,6 +433,7 @@ function applyFlags(h) {
   panels.hidden = !flags.history;
   pill.querySelector('[data-key="i"]')?.classList.toggle("recording", flags.rec_in);
   pill.querySelector('[data-key="o"]')?.classList.toggle("recording", flags.rec_out);
+  updateRecLevel(flags.rec_in, flags.rec_level ?? 0);
   for (const [, name, color] of FLAGS) {
     const el = pill.querySelector(`[data-flag="${name}"]`);
     if (el) el.style.color = flags[name] ? color : "";
@@ -443,6 +445,18 @@ function applyFlags(h) {
     count.classList.toggle("nonzero", n > 0);
   }
   document.title = `Compost — ${h.fps} FPS`;
+}
+
+// Same look as the pygame version: a fixed small ring in silence; above -45 dBFS
+// (level 0.25) it fills and grows from 12px to 50px across.
+function updateRecLevel(recording, level) {
+  recLevel.hidden = !recording;
+  if (!recording) return;
+  const threshold = 0.25;
+  const sound = level > threshold;
+  const diameter = sound ? 12 + ((level - threshold) / (1 - threshold)) * 38 : 12;
+  recLevel.classList.toggle("sound", sound);
+  recLevel.style.width = recLevel.style.height = `${diameter}px`;
 }
 
 function renderPanels(worms) {

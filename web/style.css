@@ -67,6 +67,22 @@ html, body {
 #pill .count { min-width: 40px; text-align: center; font-size: 14px; color: var(--fg-dim); }
 #pill .count.nonzero { color: var(--fg); }
 
+/* Audio-in level: empty ring while recording, filled and growing with sound */
+#rec-level {
+  position: fixed;
+  top: 28px;
+  right: 30px;
+  transform: translate(50%, -50%);
+  width: 12px;
+  height: 12px;
+  box-sizing: border-box;
+  border: 2px solid var(--rec);
+  border-radius: 50%;
+  z-index: 3;
+}
+#rec-level[hidden] { display: none; }
+#rec-level.sound { background: var(--rec); }
+
 /* Worm history panels */
 #panels {
   position: fixed;
